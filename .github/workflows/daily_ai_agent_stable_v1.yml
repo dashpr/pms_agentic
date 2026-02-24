@@ -108,6 +108,15 @@ jobs:
             --allow-degraded-fallback \
             --out-json data/reports/scheduled_daily_cycle_v1_latest.json
 
+      - name: Show Scheduled Cycle Report
+        if: always()
+        run: |
+          if [ -f data/reports/scheduled_daily_cycle_v1_latest.json ]; then
+            cat data/reports/scheduled_daily_cycle_v1_latest.json
+          else
+            echo "scheduled_daily_cycle_v1_latest.json not found"
+          fi
+
       - name: Save DB Cache
         if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}
         uses: actions/cache/save@v4

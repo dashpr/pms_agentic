@@ -27,14 +27,26 @@ def parse_args(argv=None):
 def _resolve_as_of(raw: str | None, db_path: str) -> date:
     if raw:
         return date.fromisoformat(str(raw))
+    candidates: list[date] = []
     try:
         with duckdb.connect(str(db_path), read_only=True) as conn:
-            d = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
-            if d is not None:
-                return pd.to_datetime(d).date()
+            probes = [
+                "SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1",
+                "SELECT MAX(CAST(date AS DATE)) FROM delivery_daily_v1",
+                "SELECT MAX(CAST(as_of_date AS DATE)) FROM agentic_runs_v1",
+            ]
+            for q in probes:
+                try:
+                    d = conn.execute(q).fetchone()[0]
+                    if d is not None:
+                        candidates.append(pd.to_datetime(d).date())
+                except Exception:
+                    continue
     except Exception:
         pass
-    return pd.Timestamp.utcnow().date()
+    if candidates:
+        return max(candidates)
+    return pd.Timestamp.now(tz="UTC").date()
 
 
 def _run_step(name: str, cmd: list[str], cwd: Path) -> dict[str, Any]:
@@ -175,6 +187,19 @@ def main(argv=None):
     print("as_of_date:", as_of)
     print("status:", payload["status"])
     print("decision_mode:", decision_mode)
+    if not overall_ok:
+        print("failed_steps:")
+        for s in steps:
+            if str(s.get("status", "")).upper() != "OK":
+                print(f"- {s.get('step')} rc={s.get('returncode')}")
+                st = str(s.get("stdout_tail", "")).strip()
+                er = str(s.get("stderr_tail", "")).strip()
+                if st:
+                    print("  stdout_tail:")
+                    print(st[-800:])
+                if er:
+                    print("  stderr_tail:")
+                    print(er[-800:])
     print("out_json:", out_path)
     print("=====================================")
 
