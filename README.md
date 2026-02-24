@@ -161,6 +161,8 @@ Scheduled daily cycle runner (strict-first, degraded fallback, cloud/local compa
 .venv/bin/python src/pipeline/run_scheduled_daily_cycle_v1.py \
   --db-path data/ownership.duckdb \
   --max-repair-rounds 5 \
+  --price-csv-dir data/csvs \
+  --prices-stale-days 1 \
   --bulk-lookback-days 180 \
   --strict-rebalance-pretrade \
   --allow-degraded-fallback

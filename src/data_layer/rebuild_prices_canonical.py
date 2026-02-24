@@ -4,6 +4,9 @@ Uses symbol_master as universe authority.
 Versioned institutional data layer (P2).
 """
 
+from __future__ import annotations
+
+import argparse
 import duckdb
 from pathlib import Path
 
@@ -16,14 +19,27 @@ SOURCE_TABLE = "prices_daily"       # legacy table
 TARGET_TABLE = "prices_daily_v1"    # canonical version
 
 
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="Rebuild canonical prices table prices_daily_v1")
+    p.add_argument("--db-path", default="data/ownership.duckdb")
+    return p.parse_args(argv)
+
+
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
-def main():
+def main(argv=None, db_path: str | Path | None = None):
 
     print("\n===== REBUILDING CANONICAL PRICES (v1) =====\n")
 
-    conn = duckdb.connect(DB_PATH)
+    if db_path is None:
+        if argv is not None:
+            args = parse_args(argv)
+            db_path = args.db_path
+        else:
+            db_path = DB_PATH
+
+    conn = duckdb.connect(str(db_path))
     temp_table = f"{TARGET_TABLE}__new"
 
     existing = conn.execute(
@@ -90,4 +106,6 @@ def main():
 
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(argv=sys.argv[1:])

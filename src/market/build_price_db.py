@@ -1,26 +1,25 @@
 """
-Canonical Market Price Loader → DuckDB
-(Uses your confirmed CSV path)
+Canonical Market Price Loader -> DuckDB.
 
-Builds:
-prices_daily table from local CSV universe
+Builds `prices_daily` table from local CSV universe.
 """
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
 
 import duckdb
 import pandas as pd
-from pathlib import Path
 
 
-# ---------------------------------------------------------------------
-# CONFIG  ✅ FIXED PATH
-# ---------------------------------------------------------------------
-DATA_FOLDER = Path("/Users/pravash/projects/pms_agentic/data/csvs")
-DB_PATH = Path("data/ownership.duckdb")
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="Build prices_daily from CSV universe")
+    p.add_argument("--data-folder", default="data/csvs")
+    p.add_argument("--db-path", default="data/ownership.duckdb")
+    return p.parse_args(argv)
 
 
-# ---------------------------------------------------------------------
-# LOAD SINGLE CSV
-# ---------------------------------------------------------------------
 def load_csv(file_path: Path):
     df = pd.read_csv(file_path)
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -70,11 +69,19 @@ def load_csv(file_path: Path):
 # ---------------------------------------------------------------------
 # BUILD DATABASE
 # ---------------------------------------------------------------------
-def build_price_db():
+def build_price_db(
+    data_folder: str | Path = "data/csvs",
+    db_path: str | Path = "data/ownership.duckdb",
+):
 
     print("\n===== BUILDING CANONICAL PRICE DATABASE =====\n")
 
-    conn = duckdb.connect(DB_PATH)
+    data_folder = Path(data_folder)
+    db_path = Path(db_path)
+    data_folder.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = duckdb.connect(db_path)
     temp_table = "prices_daily__new"
 
     conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
@@ -93,9 +100,9 @@ def build_price_db():
     total_rows = 0
     success_files = 0
     skipped_files = 0
-    files = list(DATA_FOLDER.glob("*.csv"))
+    files = list(data_folder.glob("*.csv"))
 
-    print("CSV folder:", DATA_FOLDER)
+    print("CSV folder:", data_folder)
     print("CSV files found:", len(files), "\n")
 
     for f in files:
@@ -132,8 +139,10 @@ def build_price_db():
     print("===================================\n")
 
 
-# ---------------------------------------------------------------------
-# ENTRY
-# ---------------------------------------------------------------------
+def main(argv=None):
+    args = parse_args(argv)
+    build_price_db(data_folder=str(args.data_folder), db_path=str(args.db_path))
+
+
 if __name__ == "__main__":
-    build_price_db()
+    main()

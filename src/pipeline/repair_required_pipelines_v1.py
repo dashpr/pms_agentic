@@ -11,6 +11,9 @@ import pandas as pd
 
 try:
     from src.ownership.backfill_bulk_archives_to_local_v1 import main as backfill_bulk_local
+    from src.data_layer.rebuild_prices_canonical import main as rebuild_prices_v1
+    from src.market.backfill_nifty_universe_prices_v1 import main as backfill_prices_csv
+    from src.market.build_price_db import build_price_db
     from src.data_layer.sync_delivery_daily_to_v1 import main as sync_delivery_v1
     from src.ownership.import_bulk_block_deals_from_files_v1 import main as import_bulk_local
     from src.ownership.collect_bulk_deals_nse import run_nse_bulk_ingestion
@@ -21,6 +24,9 @@ except ModuleNotFoundError:
 
     sys.path.append(str(Path(__file__).resolve().parents[2]))
     from src.ownership.backfill_bulk_archives_to_local_v1 import main as backfill_bulk_local
+    from src.data_layer.rebuild_prices_canonical import main as rebuild_prices_v1
+    from src.market.backfill_nifty_universe_prices_v1 import main as backfill_prices_csv
+    from src.market.build_price_db import build_price_db
     from src.data_layer.sync_delivery_daily_to_v1 import main as sync_delivery_v1
     from src.ownership.import_bulk_block_deals_from_files_v1 import main as import_bulk_local
     from src.ownership.collect_bulk_deals_nse import run_nse_bulk_ingestion
@@ -36,6 +42,10 @@ def parse_args(argv=None):
     p.add_argument("--db-path", default="data/ownership.duckdb")
     p.add_argument("--as-of-date", default=None, help="YYYY-MM-DD; default latest prices_daily_v1 date")
     p.add_argument("--max-rounds", type=int, default=3)
+    p.add_argument("--price-csv-dir", default="data/csvs")
+    p.add_argument("--prices-stale-days", type=int, default=1)
+    p.add_argument("--prices-max-symbols", type=int, default=0, help="0 = full refresh set")
+    p.add_argument("--prices-sleep-ms", type=int, default=150)
     p.add_argument("--bulk-lookback-days", type=int, default=120)
     p.add_argument("--bulk-local-input-dir", default="data_raw/nse_bulk")
     p.add_argument("--out-json", default="data/reports/repair_required_pipelines_v1_latest.json")
@@ -47,12 +57,24 @@ def _resolve_as_of(raw: str | None, db_path: str) -> date:
         return date.fromisoformat(str(raw))
     try:
         with duckdb.connect(str(db_path), read_only=True) as conn:
-            d = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
-            if d is not None:
-                return pd.to_datetime(d).date()
+            candidates: list[date] = []
+            probes = [
+                "SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1",
+                "SELECT MAX(CAST(date AS DATE)) FROM delivery_daily_v1",
+                "SELECT MAX(CAST(as_of_date AS DATE)) FROM agentic_runs_v1",
+            ]
+            for q in probes:
+                try:
+                    d = conn.execute(q).fetchone()[0]
+                    if d is not None:
+                        candidates.append(pd.to_datetime(d).date())
+                except Exception:
+                    continue
+            if candidates:
+                return max(candidates)
     except Exception:
         pass
-    return pd.Timestamp.utcnow().date()
+    return pd.Timestamp.now(tz="UTC").date()
 
 
 def _health(db_path: str, as_of: date) -> pd.DataFrame:
@@ -103,6 +125,46 @@ def main(argv=None):
                 actions["sync_delivery_v1"] = {"ok": True}
             except Exception as e:
                 actions["sync_delivery_v1"] = {"ok": False, "error": str(e)}
+
+        if "prices_daily_v1" in failing_set:
+            try:
+                px_argv = [
+                    "--db-path",
+                    str(args.db_path),
+                    "--out-dir",
+                    str(args.price_csv_dir),
+                    "--refresh-existing",
+                    "--stale-days",
+                    str(int(args.prices_stale_days)),
+                    "--sleep-ms",
+                    str(int(args.prices_sleep_ms)),
+                ]
+                if int(args.prices_max_symbols) > 0:
+                    px_argv += ["--max-symbols", str(int(args.prices_max_symbols))]
+                backfill_prices_csv(px_argv)
+                actions["refresh_prices_csv"] = {
+                    "ok": True,
+                    "stale_days": int(args.prices_stale_days),
+                    "max_symbols": int(args.prices_max_symbols),
+                }
+            except Exception as e:
+                actions["refresh_prices_csv"] = {
+                    "ok": False,
+                    "error": str(e),
+                }
+            try:
+                build_price_db(
+                    data_folder=str(args.price_csv_dir),
+                    db_path=str(args.db_path),
+                )
+                actions["build_prices_table"] = {"ok": True}
+            except Exception as e:
+                actions["build_prices_table"] = {"ok": False, "error": str(e)}
+            try:
+                rebuild_prices_v1(db_path=str(args.db_path))
+                actions["rebuild_prices_v1"] = {"ok": True}
+            except Exception as e:
+                actions["rebuild_prices_v1"] = {"ok": False, "error": str(e)}
 
         if "bulk_block_deals" in failing_set:
             actions["update_bulk_live"] = run_nse_bulk_ingestion(

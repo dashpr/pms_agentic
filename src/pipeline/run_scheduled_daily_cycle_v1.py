@@ -17,6 +17,10 @@ def parse_args(argv=None):
     p.add_argument("--db-path", default="data/ownership.duckdb")
     p.add_argument("--as-of-date", default=None, help="YYYY-MM-DD; default latest prices_daily_v1 date")
     p.add_argument("--max-repair-rounds", type=int, default=5)
+    p.add_argument("--price-csv-dir", default="data/csvs")
+    p.add_argument("--prices-stale-days", type=int, default=1)
+    p.add_argument("--prices-max-symbols", type=int, default=0, help="0 = no cap")
+    p.add_argument("--prices-sleep-ms", type=int, default=150)
     p.add_argument("--bulk-lookback-days", type=int, default=180)
     p.add_argument("--strict-rebalance-pretrade", action="store_true")
     p.add_argument("--allow-degraded-fallback", action="store_true")
@@ -107,6 +111,14 @@ def main(argv=None):
                 as_of,
                 "--max-rounds",
                 str(int(args.max_repair_rounds)),
+                "--price-csv-dir",
+                str(args.price_csv_dir),
+                "--prices-stale-days",
+                str(int(args.prices_stale_days)),
+                "--prices-max-symbols",
+                str(int(args.prices_max_symbols)),
+                "--prices-sleep-ms",
+                str(int(args.prices_sleep_ms)),
                 "--bulk-lookback-days",
                 str(int(args.bulk_lookback_days)),
             ],
