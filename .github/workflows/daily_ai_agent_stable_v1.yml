@@ -88,56 +88,56 @@ jobs:
           fi
           mkdir -p /tmp/db_bootstrap
           if echo "$OWNERSHIP_DB_URL" | grep -Eq "drive\\.google\\.com|drive\\.usercontent\\.google\\.com"; then
-            python - << 'PY'
-            import os
-            import re
-            import gdown
-            import subprocess
-            from pathlib import Path
+          python - << 'PY'
+          import os
+          import re
+          import gdown
+          import subprocess
+          from pathlib import Path
 
-            def _head_bytes(path: str) -> bytes:
-                p = Path(path)
-                if not p.exists():
-                    return b""
-                return p.read_bytes()[:512].lower()
+          def _head_bytes(path: str) -> bytes:
+              p = Path(path)
+              if not p.exists():
+                  return b""
+              return p.read_bytes()[:512].lower()
 
-            def _is_html(path: str) -> bool:
-                h = _head_bytes(path)
-                return (b"<html" in h) or (b"<!doctype" in h)
+          def _is_html(path: str) -> bool:
+              h = _head_bytes(path)
+              return (b"<html" in h) or (b"<!doctype" in h)
 
-            def _extract_drive_id(url: str) -> str:
-                patterns = [
-                    r"/d/([a-zA-Z0-9_-]+)",
-                    r"[?&]id=([a-zA-Z0-9_-]+)",
-                ]
-                for p in patterns:
-                    m = re.search(p, url)
-                    if m:
-                        return m.group(1)
-                return ""
+          def _extract_drive_id(url: str) -> str:
+              patterns = [
+                  r"/d/([a-zA-Z0-9_-]+)",
+                  r"[?&]id=([a-zA-Z0-9_-]+)",
+              ]
+              for p in patterns:
+                  m = re.search(p, url)
+                  if m:
+                      return m.group(1)
+              return ""
 
-            url = os.environ["OWNERSHIP_DB_URL"]
-            out = "/tmp/db_bootstrap/seed.bin"
-            ok = gdown.download(url=url, output=out, quiet=False, fuzzy=True)
-            if not ok:
-                raise SystemExit("gdown failed to download OWNERSHIP_DB_URL")
-            # Some Drive links can still return HTML in CI. Retry with direct URL.
-            if _is_html(out):
-                file_id = _extract_drive_id(url)
-                if file_id:
-                    direct = (
-                        "https://drive.usercontent.google.com/download"
-                        f"?id={file_id}&export=download&confirm=t"
-                    )
-                    subprocess.run(["curl", "-fL", direct, "-o", out], check=True)
-            if _is_html(out):
-                raise SystemExit(
-                    "Google Drive URL returned HTML instead of file bytes. "
-                    "Set OWNERSHIP_DB_URL to a direct downloadable URL and "
-                    "ensure file is shared with 'Anyone with the link'."
-                )
-            print("Google Drive download completed:", out)
-            PY
+          url = os.environ["OWNERSHIP_DB_URL"]
+          out = "/tmp/db_bootstrap/seed.bin"
+          ok = gdown.download(url=url, output=out, quiet=False, fuzzy=True)
+          if not ok:
+              raise SystemExit("gdown failed to download OWNERSHIP_DB_URL")
+          # Some Drive links can still return HTML in CI. Retry with direct URL.
+          if _is_html(out):
+              file_id = _extract_drive_id(url)
+              if file_id:
+                  direct = (
+                      "https://drive.usercontent.google.com/download"
+                      f"?id={file_id}&export=download&confirm=t"
+                  )
+                  subprocess.run(["curl", "-fL", direct, "-o", out], check=True)
+          if _is_html(out):
+              raise SystemExit(
+                  "Google Drive URL returned HTML instead of file bytes. "
+                  "Set OWNERSHIP_DB_URL to a direct downloadable URL and "
+                  "ensure file is shared with 'Anyone with the link'."
+              )
+          print("Google Drive download completed:", out)
+          PY
           else
             curl -fL "$OWNERSHIP_DB_URL" -o /tmp/db_bootstrap/seed.bin
           fi
