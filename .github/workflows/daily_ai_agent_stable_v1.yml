@@ -30,7 +30,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install duckdb pandas numpy requests lxml beautifulsoup4 pyyaml
+          pip install duckdb pandas numpy requests lxml beautifulsoup4 pyyaml gdown
 
       - name: Prepare Folders
         run: |
@@ -65,7 +65,20 @@ jobs:
             exit 0
           fi
           mkdir -p /tmp/db_bootstrap
-          curl -fL "$OWNERSHIP_DB_URL" -o /tmp/db_bootstrap/seed.bin
+          if echo "$OWNERSHIP_DB_URL" | grep -q "drive.google.com"; then
+            python - << 'PY'
+            import os
+            import gdown
+            url = os.environ["OWNERSHIP_DB_URL"]
+            out = "/tmp/db_bootstrap/seed.bin"
+            ok = gdown.download(url=url, output=out, quiet=False, fuzzy=True)
+            if not ok:
+                raise SystemExit("gdown failed to download OWNERSHIP_DB_URL")
+            print("Google Drive download completed:", out)
+            PY
+          else
+            curl -fL "$OWNERSHIP_DB_URL" -o /tmp/db_bootstrap/seed.bin
+          fi
           python - << 'PY'
           from pathlib import Path
           import shutil
