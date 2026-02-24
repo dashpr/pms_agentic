@@ -184,6 +184,12 @@ Start dashboard:
 .venv/bin/streamlit run src/monitor_dashboard.py --server.port 8502
 ```
 
+Cloud entrypoint (Streamlit Community Cloud):
+
+```bash
+streamlit_app.py
+```
+
 Dashboard features:
 - live portfolio targets + watchlist + explainability
 - filtered backtest analytics (year/month filters recalculate CAGR, win rate, drawdown, Sharpe)
@@ -205,12 +211,26 @@ What it does daily (Mon-Fri):
 3. runs strict decision cycle first
 4. falls back to degraded decision mode if strict fails (still emits output)
 5. uploads reports + DB snapshot artifacts
+6. publishes latest runtime snapshot to branch `runtime-data` (for cloud dashboard consumption)
 
 Important bootstrap note:
 
 - first cloud run requires `data/ownership.duckdb` to exist in the workflow environment.
 - easiest path: run workflow once after pushing a seeded DB snapshot (or use a prior workflow artifact/cache).
 - optional: set GitHub Actions secret `OWNERSHIP_DB_URL` to a downloadable DB snapshot URL; workflow will auto-bootstrap from it if cache/artifact is missing.
+
+## Streamlit Cloud Deployment (No Laptop Dependency)
+
+1. Open [Streamlit Community Cloud](https://share.streamlit.io/) and connect GitHub.
+2. Select repo: `dashpr/pms_agentic`.
+3. Branch: `main`.
+4. Main file path: `streamlit_app.py`.
+5. In Streamlit app settings -> Secrets, set:
+   - `OWNERSHIP_DB_URL = "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership.duckdb"`
+   - `OWNERSHIP_DB_REFRESH_MINUTES = 60`
+6. Deploy.
+
+After deployment, the URL is globally accessible (mobile/desktop). The app auto-downloads the runtime DuckDB snapshot and refreshes periodically.
 
 ## DuckDB Tables
 

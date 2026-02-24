@@ -7,7 +7,7 @@ on:
     - cron: "45 13 * * 1-5"
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 concurrency:
@@ -268,6 +268,48 @@ jobs:
           else
             echo "scheduled_daily_cycle_v1_latest.json not found"
           fi
+
+      - name: Publish Runtime Snapshot Branch
+        if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SNAP_DIR="/tmp/runtime-data-branch"
+          rm -rf "$SNAP_DIR"
+          mkdir -p "$SNAP_DIR"
+
+          cd "$SNAP_DIR"
+          git init
+          git checkout -b runtime-data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p data data/reports
+          cp "$GITHUB_WORKSPACE/data/ownership.duckdb" data/ownership.duckdb
+
+          for f in \
+            "$GITHUB_WORKSPACE/data/reports/scheduled_daily_cycle_v1_latest.json" \
+            "$GITHUB_WORKSPACE/data/reports/ai_agent_stable_stocks_v1_latest.json" \
+            "$GITHUB_WORKSPACE/data/reports/repair_required_pipelines_v1_latest.json"; do
+            if [ -f "$f" ]; then
+              cp "$f" data/reports/
+            fi
+          done
+
+          cat > data/runtime_meta.json <<EOF
+          {
+            "published_at_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "source_sha": "${GITHUB_SHA}",
+            "source_run_id": "${GITHUB_RUN_ID}"
+          }
+          EOF
+
+          git add -A
+          git commit -m "runtime snapshot ${GITHUB_SHA} $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin runtime-data
+          echo "Runtime DB URL: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/runtime-data/data/ownership.duckdb"
 
       - name: Save DB Cache
         if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}

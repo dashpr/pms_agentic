@@ -1,0 +1,10 @@
+duckdb
+numpy
+pandas
+streamlit
+yfinance
+requests
+lxml
+beautifulsoup4
+pyyaml
+gdown

@@ -36,6 +36,12 @@ except ModuleNotFoundError:
 
 st.set_page_config(page_title="AI Agent Stable Stocks", layout="wide")
 
+DEFAULT_REMOTE_DB_URL = (
+    "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership.duckdb"
+)
+REMOTE_DB_LOCAL_PATH = Path("/tmp/ownership_runtime.duckdb")
+REMOTE_DB_META_PATH = Path("/tmp/ownership_runtime_meta.json")
+
 
 def _safe_json_load(x: Any) -> dict[str, Any]:
     if isinstance(x, dict):
@@ -46,6 +52,61 @@ def _safe_json_load(x: Any) -> dict[str, Any]:
         return json.loads(str(x))
     except Exception:
         return {}
+
+
+def _ensure_remote_db_snapshot(url: str, refresh_minutes: int = 60) -> str:
+    url = str(url or "").strip()
+    if not url:
+        raise ValueError("Remote DB URL is empty.")
+    refresh_minutes = max(int(refresh_minutes), 1)
+    now = pd.Timestamp.utcnow()
+    if REMOTE_DB_LOCAL_PATH.exists() and REMOTE_DB_META_PATH.exists():
+        meta = _safe_json_load(REMOTE_DB_META_PATH.read_text(encoding="utf-8"))
+        last_dl = pd.to_datetime(meta.get("downloaded_at_utc"), errors="coerce")
+        if pd.notna(last_dl):
+            age_min = (now - last_dl).total_seconds() / 60.0
+            if age_min <= float(refresh_minutes):
+                # Validate cached file before returning.
+                with duckdb.connect(str(REMOTE_DB_LOCAL_PATH), read_only=True) as conn:
+                    conn.execute("SELECT 1").fetchone()
+                return str(REMOTE_DB_LOCAL_PATH)
+
+    try:
+        import requests
+    except Exception as e:
+        raise RuntimeError(f"requests not available for remote DB download: {e}") from e
+
+    tmp_path = REMOTE_DB_LOCAL_PATH.with_suffix(".download")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    with requests.get(url, stream=True, timeout=180) as r:
+        r.raise_for_status()
+        with tmp_path.open("wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 512):
+                if chunk:
+                    f.write(chunk)
+    if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+        raise RuntimeError("Downloaded remote DB snapshot is empty.")
+    head = tmp_path.read_bytes()[:256].lower()
+    if (b"<html" in head) or (b"<!doctype" in head) or (b"internal server error" in head):
+        raise RuntimeError("Remote DB URL returned HTML/text error content, not DuckDB bytes.")
+
+    # Integrity check before activating downloaded file.
+    with duckdb.connect(str(tmp_path), read_only=True) as conn:
+        conn.execute("SELECT 1").fetchone()
+    tmp_path.replace(REMOTE_DB_LOCAL_PATH)
+    REMOTE_DB_META_PATH.write_text(
+        json.dumps(
+            {
+                "downloaded_at_utc": now.isoformat(),
+                "source_url": url,
+                "size_bytes": int(REMOTE_DB_LOCAL_PATH.stat().st_size),
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return str(REMOTE_DB_LOCAL_PATH)
 
 
 def _to_dt_ns(s: pd.Series) -> pd.Series:
@@ -605,7 +666,10 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Controls")
-        db_path = st.text_input("DuckDB Path", value="data/ownership.duckdb")
+        default_db_path = os.getenv("PMS_DB_PATH", "data/ownership.duckdb")
+        db_path = st.text_input("DuckDB Path", value=default_db_path)
+        remote_db_url = os.getenv("OWNERSHIP_DB_URL", DEFAULT_REMOTE_DB_URL).strip()
+        remote_refresh_minutes = int(os.getenv("OWNERSHIP_DB_REFRESH_MINUTES", "60"))
         top_n_watchlist = st.slider("Top watchlist rows", min_value=5, max_value=25, value=25, step=1)
         bt_scope = st.radio("Backtest scope", options=["All runs", "Latest run"], index=0)
         use_live_quotes = st.checkbox("Use real-time Yahoo quotes (best effort)", value=True)
@@ -622,6 +686,15 @@ def main() -> None:
             _load_db_bundle.clear()
             _fetch_live_quotes.clear()
             _load_pipeline_health.clear()
+
+    if not Path(db_path).exists() and remote_db_url:
+        try:
+            with st.spinner("Bootstrapping cloud DB snapshot..."):
+                db_path = _ensure_remote_db_snapshot(remote_db_url, refresh_minutes=remote_refresh_minutes)
+            st.caption(f"Using runtime DB snapshot: {db_path}")
+        except Exception as e:
+            st.error(f"Remote DB bootstrap failed: {e}")
+            return
 
     if not Path(db_path).exists():
         st.error(f"DB not found: {db_path}")
