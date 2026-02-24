@@ -109,6 +109,76 @@ def _ensure_remote_db_snapshot(url: str, refresh_minutes: int = 60) -> str:
     return str(REMOTE_DB_LOCAL_PATH)
 
 
+def _runtime_meta_url(remote_db_url: str) -> str:
+    u = str(remote_db_url or "").strip()
+    if not u:
+        return ""
+    if u.endswith("/ownership_runtime.duckdb"):
+        return u.rsplit("/", 1)[0] + "/runtime_meta.json"
+    if u.endswith(".duckdb"):
+        return u.rsplit("/", 1)[0] + "/runtime_meta.json"
+    return ""
+
+
+@st.cache_data(ttl=300)
+def _fetch_runtime_meta(remote_db_url: str) -> dict[str, Any]:
+    meta_url = _runtime_meta_url(remote_db_url)
+    if not meta_url:
+        return {}
+    try:
+        import requests
+    except Exception:
+        return {}
+    try:
+        r = requests.get(meta_url, timeout=20)
+        if r.status_code != 200:
+            return {}
+        return _safe_json_load(r.text)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=180)
+def _load_data_provenance(db_path: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    with duckdb.connect(db_path, read_only=True) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                (SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1) AS prices_max_date,
+                (SELECT MAX(CAST(date AS DATE)) FROM delivery_daily_v1) AS delivery_max_date,
+                (SELECT MAX(CAST(date AS DATE)) FROM bulk_block_deals) AS bulk_max_date,
+                (SELECT MAX(CAST(as_of_date AS DATE)) FROM agentic_runs_v1) AS agentic_max_asof,
+                (SELECT MAX(run_ts) FROM agentic_runs_v1) AS agentic_max_run_ts,
+                (SELECT COUNT(*) FROM agentic_runs_v1) AS agentic_run_count,
+                (SELECT COUNT(*) FROM agentic_consensus_v1) AS consensus_total_rows
+            """
+        ).fetchone()
+        out = {
+            "prices_max_date": row[0],
+            "delivery_max_date": row[1],
+            "bulk_max_date": row[2],
+            "agentic_max_asof": row[3],
+            "agentic_max_run_ts": row[4],
+            "agentic_run_count": int(row[5] or 0),
+            "consensus_total_rows": int(row[6] or 0),
+        }
+        lr = conn.execute(
+            """
+            SELECT run_id, run_ts, as_of_date, status
+            FROM agentic_runs_v1
+            ORDER BY run_ts DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if lr:
+            out["latest_run_id"] = str(lr[0])
+            out["latest_run_ts"] = lr[1]
+            out["latest_run_asof"] = lr[2]
+            out["latest_run_status"] = str(lr[3])
+    return out
+
+
 def _to_dt_ns(s: pd.Series) -> pd.Series:
     z = pd.to_datetime(s, errors="coerce")
     if hasattr(z, "dtype") and str(z.dtype).startswith("datetime64"):
@@ -699,6 +769,9 @@ def main() -> None:
         return
 
     bundle = _load_db_bundle(db_path)
+    provenance = _load_data_provenance(db_path)
+    remote_runtime_meta = _fetch_runtime_meta(remote_db_url) if remote_db_url else {}
+    local_runtime_meta = _safe_json_load(REMOTE_DB_META_PATH.read_text(encoding="utf-8")) if REMOTE_DB_META_PATH.exists() else {}
     symbol_meta = bundle.get("symbol_meta", pd.DataFrame(columns=["symbol", "sector"])).copy()
     if not symbol_meta.empty:
         symbol_meta["symbol"] = symbol_meta["symbol"].astype(str).str.upper()
@@ -795,6 +868,35 @@ def main() -> None:
     c4.metric("Portfolio", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
     c5.metric("Portfolio CAGR", f"{latest_bt_cagr:.2%}")
     c6.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
+
+    st.subheader("Data Provenance")
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("DB Source", Path(db_path).name)
+    p2.metric(
+        "Runtime Published (UTC)",
+        str(remote_runtime_meta.get("published_at_utc", "-")),
+    )
+    p3.metric(
+        "Snapshot Downloaded (UTC)",
+        str(local_runtime_meta.get("downloaded_at_utc", "-")),
+    )
+    p4.metric(
+        "Latest Decision Run",
+        str(provenance.get("latest_run_id", "-"))[:18],
+    )
+    prov_rows = [
+        {"key": "latest_run_status", "value": provenance.get("latest_run_status")},
+        {"key": "latest_run_asof", "value": str(provenance.get("latest_run_asof"))},
+        {"key": "latest_run_ts", "value": str(provenance.get("latest_run_ts"))},
+        {"key": "prices_daily_v1.max_date", "value": str(provenance.get("prices_max_date"))},
+        {"key": "delivery_daily_v1.max_date", "value": str(provenance.get("delivery_max_date"))},
+        {"key": "bulk_block_deals.max_date", "value": str(provenance.get("bulk_max_date"))},
+        {"key": "agentic_runs_v1.count", "value": int(provenance.get("agentic_run_count", 0))},
+        {"key": "agentic_consensus_v1.rows", "value": int(provenance.get("consensus_total_rows", 0))},
+        {"key": "runtime_meta.source_sha", "value": str(remote_runtime_meta.get("source_sha", "-"))},
+        {"key": "runtime_meta.source_run_id", "value": str(remote_runtime_meta.get("source_run_id", "-"))},
+    ]
+    st.dataframe(pd.DataFrame(prov_rows), hide_index=True, use_container_width=True)
 
     st.subheader("Weekly Rebalance Tracker")
     rebalance_weekday = 2  # Wednesday
