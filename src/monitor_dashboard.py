@@ -1277,13 +1277,20 @@ def main() -> None:
         st.dataframe(hsty, hide_index=True, use_container_width=True)
 
     cycle_report_path = Path("data/reports/incremental_cycle_latest.json")
-    if cycle_report_path.exists():
-        cyc = _safe_json_load(cycle_report_path.read_text(encoding="utf-8"))
+    scheduled_report_path = Path("data/reports/scheduled_daily_cycle_v1_latest.json")
+    selected_cycle_path = cycle_report_path if cycle_report_path.exists() else (
+        scheduled_report_path if scheduled_report_path.exists() else None
+    )
+    if selected_cycle_path is not None:
+        cyc = _safe_json_load(selected_cycle_path.read_text(encoding="utf-8"))
         st.markdown("**Daily Automation Snapshot**")
         st.write(
             {
+                "source_report": selected_cycle_path.name,
                 "last_cycle_as_of_date": cyc.get("as_of_date"),
                 "version_snapshot": cyc.get("version_snapshot", {}),
+                "status": cyc.get("status"),
+                "decision_mode": cyc.get("decision_mode"),
             }
         )
         step_actions = {
@@ -1327,7 +1334,7 @@ def main() -> None:
             st.dataframe(ds_sty, hide_index=True, use_container_width=True)
     else:
         st.markdown("**Daily Automation Snapshot**")
-        st.info("No cycle report found. Run daily automation once.")
+        st.info("No automation report available in this runtime snapshot yet.")
 
 
 if __name__ == "__main__":
