@@ -55,6 +55,28 @@ jobs:
           path: data
           if_no_artifact_found: warn
 
+      - name: Validate Restored DB Seed (Drop If Invalid)
+        if: ${{ hashFiles('data/ownership.duckdb') != '' }}
+        run: |
+          python - << 'PY'
+          from pathlib import Path
+          import duckdb
+
+          db = Path("data/ownership.duckdb")
+          try:
+              with duckdb.connect(str(db), read_only=True) as conn:
+                  conn.execute("SELECT 1").fetchone()
+              print("Restored DB is valid.")
+          except Exception as e:
+              print("Restored DB invalid, deleting to force bootstrap. Error:", e)
+              try:
+                  head = db.read_bytes()[:200]
+                  print("Invalid DB header preview:", head)
+              except Exception:
+                  pass
+              db.unlink(missing_ok=True)
+          PY
+
       - name: Bootstrap DB from Secret URL (Fallback)
         if: ${{ hashFiles('data/ownership.duckdb') == '' }}
         env:
@@ -65,7 +87,7 @@ jobs:
             exit 0
           fi
           mkdir -p /tmp/db_bootstrap
-          if echo "$OWNERSHIP_DB_URL" | grep -q "drive.google.com"; then
+          if echo "$OWNERSHIP_DB_URL" | grep -Eq "drive\\.google\\.com|drive\\.usercontent\\.google\\.com"; then
             python - << 'PY'
             import os
             import gdown
