@@ -64,13 +64,36 @@ jobs:
             echo "OWNERSHIP_DB_URL not set; skipping bootstrap."
             exit 0
           fi
-          curl -L "$OWNERSHIP_DB_URL" -o data/ownership.duckdb
+          mkdir -p /tmp/db_bootstrap
+          curl -fL "$OWNERSHIP_DB_URL" -o /tmp/db_bootstrap/seed.bin
+          python - << 'PY'
+          from pathlib import Path
+          import shutil
+          import zipfile
+
+          src = Path("/tmp/db_bootstrap/seed.bin")
+          out = Path("data/ownership.duckdb")
+          out.parent.mkdir(parents=True, exist_ok=True)
+
+          # Support both raw .duckdb URLs and zipped snapshots.
+          if zipfile.is_zipfile(src):
+              with zipfile.ZipFile(src) as zf:
+                  zf.extractall("/tmp/db_bootstrap/unzipped")
+              cand = list(Path("/tmp/db_bootstrap/unzipped").rglob("*.duckdb"))
+              if not cand:
+                  raise SystemExit("Bootstrap zip did not contain a .duckdb file")
+              shutil.copy2(cand[0], out)
+          else:
+              shutil.copy2(src, out)
+          print(f"Bootstrap DB written: {out}")
+          PY
           ls -lh data/ownership.duckdb
 
       - name: Verify DB Exists
         run: |
           if [ ! -f data/ownership.duckdb ]; then
-            echo "Missing data/ownership.duckdb. Seed one run from laptop first, then rerun workflow."
+            echo "Missing data/ownership.duckdb."
+            echo "Set Actions secret OWNERSHIP_DB_URL to a direct downloadable .duckdb or .zip URL, then rerun."
             exit 1
           fi
           ls -lh data/ownership.duckdb
