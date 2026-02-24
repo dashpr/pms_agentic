@@ -56,10 +56,14 @@ jobs:
           if_no_artifact_found: warn
 
       - name: Bootstrap DB from Secret URL (Fallback)
-        if: ${{ hashFiles('data/ownership.duckdb') == '' && secrets.OWNERSHIP_DB_URL != '' }}
+        if: ${{ hashFiles('data/ownership.duckdb') == '' }}
         env:
           OWNERSHIP_DB_URL: ${{ secrets.OWNERSHIP_DB_URL }}
         run: |
+          if [ -z "$OWNERSHIP_DB_URL" ]; then
+            echo "OWNERSHIP_DB_URL not set; skipping bootstrap."
+            exit 0
+          fi
           curl -L "$OWNERSHIP_DB_URL" -o data/ownership.duckdb
           ls -lh data/ownership.duckdb
 
