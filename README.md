@@ -226,7 +226,7 @@ Important bootstrap note:
 3. Branch: `main`.
 4. Main file path: `streamlit_app.py`.
 5. In Streamlit app settings -> Secrets, set:
-   - `OWNERSHIP_DB_URL = "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership.duckdb"`
+   - `OWNERSHIP_DB_URL = "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership_runtime.duckdb"`
    - `OWNERSHIP_DB_REFRESH_MINUTES = 60`
 6. Deploy.
 

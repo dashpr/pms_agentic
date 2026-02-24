@@ -37,7 +37,7 @@ except ModuleNotFoundError:
 st.set_page_config(page_title="AI Agent Stable Stocks", layout="wide")
 
 DEFAULT_REMOTE_DB_URL = (
-    "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership.duckdb"
+    "https://raw.githubusercontent.com/dashpr/pms_agentic/runtime-data/data/ownership_runtime.duckdb"
 )
 REMOTE_DB_LOCAL_PATH = Path("/tmp/ownership_runtime.duckdb")
 REMOTE_DB_META_PATH = Path("/tmp/ownership_runtime_meta.json")

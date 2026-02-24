@@ -286,7 +286,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mkdir -p data data/reports
-          cp "$GITHUB_WORKSPACE/data/ownership.duckdb" data/ownership.duckdb
+          python "$GITHUB_WORKSPACE/src/pipeline/build_runtime_dashboard_db_v1.py" \
+            --src-db "$GITHUB_WORKSPACE/data/ownership.duckdb" \
+            --out-db "$SNAP_DIR/data/ownership_runtime.duckdb"
+          ls -lh data/ownership_runtime.duckdb
 
           for f in \
             "$GITHUB_WORKSPACE/data/reports/scheduled_daily_cycle_v1_latest.json" \
@@ -309,7 +312,7 @@ jobs:
           git commit -m "runtime snapshot ${GITHUB_SHA} $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin runtime-data
-          echo "Runtime DB URL: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/runtime-data/data/ownership.duckdb"
+          echo "Runtime DB URL: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/runtime-data/data/ownership_runtime.duckdb"
 
       - name: Save DB Cache
         if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}
