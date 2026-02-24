@@ -193,15 +193,13 @@ def _pct_change_color(v: object) -> str:
 
 def _status_color(v: object) -> str:
     s = str(v).upper()
-    if s == "OK":
+    if s in {"OK", "WORKING"}:
         return "background-color: #C6F6C6; color: #1d3b1f; font-weight: 600;"
-    if s == "SKIPPED":
+    if s in {"SKIPPED", "STALE"}:
         return "background-color: #FFD166; color: #4a3a00; font-weight: 600;"
-    if s == "WORKING":
-        return "background-color: #C6F6C6; color: #1d3b1f; font-weight: 600;"
-    if s == "STALE":
-        return "background-color: #FFD166; color: #4a3a00; font-weight: 600;"
-    if s in {"BROKEN", "OPTIONAL_OFF", "ERROR"}:
+    if s in {"OPTIONAL_OFF", "N/A", "NA"}:
+        return "background-color: #E6E6E6; color: #333333; font-weight: 600;"
+    if s in {"BROKEN", "ERROR"}:
         return "background-color: #EF476F; color: #ffffff; font-weight: 600;"
     return "background-color: #E6E6E6; color: #333333;"
 
@@ -644,7 +642,7 @@ def _load_pipeline_health(db_path: str) -> pd.DataFrame:
     h["last_date"] = pd.to_datetime(h["last_date"], errors="coerce")
     today = pd.Timestamp.utcnow().date()
     h["calendar_lag_days"] = h["last_date"].apply(
-        lambda x: int((pd.Timestamp(today) - pd.Timestamp(x).date()).days) if pd.notna(x) else None
+        lambda x: int((today - pd.Timestamp(x).date()).days) if pd.notna(x) else None
     )
     return h
 
@@ -1130,60 +1128,107 @@ def main() -> None:
         }
     )
     health_ops = pd.DataFrame()
-    decision_core_ok = False
-    rebalance_strict_ok = False
+    decision_core_status = "BROKEN"
+    rebalance_strict_status = "BROKEN"
     try:
         health_ops = _load_pipeline_health(db_path)
     except Exception:
         health_ops = pd.DataFrame()
+
+    def _rollup_pipeline_status(df: pd.DataFrame, pipelines: list[str]) -> str:
+        if df.empty:
+            return "BROKEN"
+        z = df[df["pipeline"].isin(pipelines)].copy()
+        if z.empty:
+            return "BROKEN"
+        s = z["status"].astype(str).str.upper()
+        if s.isin(["BROKEN", "ERROR"]).any():
+            return "BROKEN"
+        if (s == "STALE").any():
+            return "STALE"
+        if (s == "WORKING").all():
+            return "OK"
+        return "BROKEN"
+
     if not health_ops.empty:
-        req_dec = health_ops[health_ops["pipeline"].isin(["prices_daily_v1", "delivery_daily_v1"])].copy()
-        req_reb = health_ops[health_ops["pipeline"].isin(["prices_daily_v1", "delivery_daily_v1", "bulk_block_deals"])].copy()
-        decision_core_ok = bool((req_dec["status"].astype(str).str.upper() == "WORKING").all())
-        rebalance_strict_ok = bool((req_reb["status"].astype(str).str.upper() == "WORKING").all())
+        decision_core_status = _rollup_pipeline_status(health_ops, ["prices_daily_v1", "delivery_daily_v1"])
+        rebalance_strict_status = _rollup_pipeline_status(
+            health_ops,
+            ["prices_daily_v1", "delivery_daily_v1", "bulk_block_deals"],
+        )
+
+    runtime_snapshot_mode = Path(db_path).name.lower() == "ownership_runtime.duckdb"
 
     ops_rows = [
         {
             "item": "Decision core pipelines",
-            "status": "OK" if decision_core_ok else "BROKEN",
+            "status": decision_core_status,
             "action": "Core feeds required for decision generation.",
             "how_to_fix": ".venv/bin/python src/pipeline/repair_required_pipelines_v1.py --db-path data/ownership.duckdb --max-rounds 3",
         },
         {
             "item": "Rebalance strict feeds",
-            "status": "OK" if rebalance_strict_ok else "BROKEN",
+            "status": rebalance_strict_status,
             "action": "Strict mode requires bulk feed also WORKING.",
             "how_to_fix": ".venv/bin/python src/pipeline/repair_required_pipelines_v1.py --db-path data/ownership.duckdb --max-rounds 3",
         },
         {
             "item": "Release checks report",
-            "status": "OK" if bool(rc) else "BROKEN",
+            "status": ("OK" if bool(rc) else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")),
             "action": "Run release checks to regenerate report.",
-            "how_to_fix": ".venv/bin/python src/qa/run_release_checks_ai_agent_stable_v1.py --db-path data/ownership.duckdb",
+            "how_to_fix": (
+                "Published in runtime snapshot branch; local file may be absent in cloud app container."
+                if runtime_snapshot_mode
+                else ".venv/bin/python src/qa/run_release_checks_ai_agent_stable_v1.py --db-path data/ownership.duckdb"
+            ),
         },
         {
             "item": "Zerodha keys",
-            "status": "OK" if bool(os.getenv("KITE_API_KEY") and os.getenv("KITE_API_SECRET")) else "BROKEN",
+            "status": (
+                "OK"
+                if bool(os.getenv("KITE_API_KEY") and os.getenv("KITE_API_SECRET"))
+                else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
+            ),
             "action": "Set broker keys only when enabling broker execution gate.",
             "how_to_fix": "export KITE_API_KEY=... && export KITE_API_SECRET=...",
         },
         {
             "item": "News provider keys",
-            "status": "OK" if bool(os.getenv("NEWSAPI_KEY") and os.getenv("FINNHUB_API_KEY")) else "BROKEN",
+            "status": (
+                "OK"
+                if bool(os.getenv("NEWSAPI_KEY") and os.getenv("FINNHUB_API_KEY"))
+                else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
+            ),
             "action": "Set NewsAPI + Finnhub keys for live sentiment feed.",
             "how_to_fix": "export NEWSAPI_KEY=... && export FINNHUB_API_KEY=...",
         },
         {
             "item": "Daily automation report",
-            "status": "OK" if Path("data/reports/incremental_cycle_latest.json").exists() else "BROKEN",
+            "status": (
+                "OK"
+                if Path("data/reports/incremental_cycle_latest.json").exists()
+                else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
+            ),
             "action": "Run daily automation cycle.",
-            "how_to_fix": ".venv/bin/python src/pipeline/run_incremental_data_and_retrain_v1.py --daily-auto --db-path data/ownership.duckdb",
+            "how_to_fix": (
+                "Cloud app reads runtime snapshot; automation report is tracked in GitHub Actions artifacts."
+                if runtime_snapshot_mode
+                else ".venv/bin/python src/pipeline/run_incremental_data_and_retrain_v1.py --daily-auto --db-path data/ownership.duckdb"
+            ),
         },
         {
             "item": "Version snapshot registry",
-            "status": "OK" if Path("data/reports/version_snapshot_latest.json").exists() else "BROKEN",
+            "status": (
+                "OK"
+                if Path("data/reports/version_snapshot_latest.json").exists()
+                else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
+            ),
             "action": "Record version snapshot for current increment.",
-            "how_to_fix": ".venv/bin/python src/versioning/record_version_snapshot_v1.py --db-path data/ownership.duckdb --context manual",
+            "how_to_fix": (
+                "Run version snapshot in pipeline runner; cloud app container does not persist local report files."
+                if runtime_snapshot_mode
+                else ".venv/bin/python src/versioning/record_version_snapshot_v1.py --db-path data/ownership.duckdb --context manual"
+            ),
         },
     ]
     ops_df = pd.DataFrame(ops_rows)
