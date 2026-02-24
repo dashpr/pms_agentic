@@ -30,7 +30,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install duckdb pandas numpy requests lxml beautifulsoup4 pyyaml gdown
+          pip install duckdb pandas numpy requests lxml beautifulsoup4 pyyaml gdown yfinance
 
       - name: Prepare Folders
         run: |

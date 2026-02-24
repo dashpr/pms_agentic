@@ -31,11 +31,18 @@ def parse_args(argv=None):
 def _resolve_as_of(raw: str | None, db_path: str) -> date:
     if raw:
         return date.fromisoformat(str(raw))
-    candidates: list[date] = []
     try:
         with duckdb.connect(str(db_path), read_only=True) as conn:
+            # Anchor decisions to the latest available market price date.
+            try:
+                px = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
+                if px is not None:
+                    return pd.to_datetime(px).date()
+            except Exception:
+                pass
+
+            candidates: list[date] = []
             probes = [
-                "SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1",
                 "SELECT MAX(CAST(date AS DATE)) FROM delivery_daily_v1",
                 "SELECT MAX(CAST(as_of_date AS DATE)) FROM agentic_runs_v1",
             ]
@@ -46,10 +53,10 @@ def _resolve_as_of(raw: str | None, db_path: str) -> date:
                         candidates.append(pd.to_datetime(d).date())
                 except Exception:
                     continue
+            if candidates:
+                return max(candidates)
     except Exception:
         pass
-    if candidates:
-        return max(candidates)
     return pd.Timestamp.now(tz="UTC").date()
 
 

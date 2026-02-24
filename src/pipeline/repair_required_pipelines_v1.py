@@ -57,9 +57,17 @@ def _resolve_as_of(raw: str | None, db_path: str) -> date:
         return date.fromisoformat(str(raw))
     try:
         with duckdb.connect(str(db_path), read_only=True) as conn:
+            # Anchor repair freshness to latest market prices; delivery can be ahead
+            # on non-trading days and should not force a false stale on prices.
+            try:
+                px = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
+                if px is not None:
+                    return pd.to_datetime(px).date()
+            except Exception:
+                pass
+
             candidates: list[date] = []
             probes = [
-                "SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1",
                 "SELECT MAX(CAST(date AS DATE)) FROM delivery_daily_v1",
                 "SELECT MAX(CAST(as_of_date AS DATE)) FROM agentic_runs_v1",
             ]
