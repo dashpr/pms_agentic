@@ -84,6 +84,12 @@ jobs:
                   raise SystemExit("Bootstrap zip did not contain a .duckdb file")
               shutil.copy2(cand[0], out)
           else:
+              head = src.read_bytes()[:512].lower()
+              if b"<html" in head or b"<!doctype" in head:
+                  raise SystemExit(
+                      "Bootstrap URL returned HTML, not a DB file. "
+                      "Use a direct download URL to .duckdb or .zip."
+                  )
               shutil.copy2(src, out)
           print(f"Bootstrap DB written: {out}")
           PY
@@ -97,6 +103,27 @@ jobs:
             exit 1
           fi
           ls -lh data/ownership.duckdb
+
+      - name: Validate DuckDB Integrity
+        run: |
+          python - << 'PY'
+          from pathlib import Path
+          import duckdb
+
+          db = Path("data/ownership.duckdb")
+          try:
+              with duckdb.connect(str(db), read_only=True) as conn:
+                  conn.execute("SELECT 1").fetchone()
+              print("DuckDB validation: OK")
+          except Exception as e:
+              head = db.read_bytes()[:200]
+              print("DuckDB validation failed:", e)
+              print("File header preview:", head)
+              raise SystemExit(
+                  "Invalid ownership.duckdb in runner. "
+                  "OWNERSHIP_DB_URL likely points to HTML/preview URL, not direct file."
+              )
+          PY
 
       - name: Run Scheduled Daily Cycle
         run: |
