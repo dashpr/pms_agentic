@@ -1,0 +1,9 @@
+
+requests
+beautifulsoup4
+pandas
+lxml
+duckdb
+pyyaml
+streamlit
+kiteconnect

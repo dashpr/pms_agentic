@@ -1,0 +1,107 @@
+name: Daily AI Agent Stable Stocks v1
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 19:15 IST, Monday-Friday
+    - cron: "45 13 * * 1-5"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: daily-ai-agent-stable-v1
+  cancel-in-progress: false
+
+jobs:
+  run-daily-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install duckdb pandas numpy requests lxml beautifulsoup4 pyyaml
+
+      - name: Prepare Folders
+        run: |
+          mkdir -p data data/reports data_raw/nse_bulk
+
+      - name: Restore DB Cache
+        id: restore-db
+        uses: actions/cache/restore@v4
+        with:
+          path: data/ownership.duckdb
+          key: ownership-duckdb-${{ github.run_id }}
+          restore-keys: |
+            ownership-duckdb-
+
+      - name: Download Last DB Artifact (Fallback)
+        if: ${{ hashFiles('data/ownership.duckdb') == '' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: daily_ai_agent_stable_v1.yml
+          name: ownership-db-snapshot
+          path: data
+          if_no_artifact_found: warn
+
+      - name: Bootstrap DB from Secret URL (Fallback)
+        if: ${{ hashFiles('data/ownership.duckdb') == '' && secrets.OWNERSHIP_DB_URL != '' }}
+        env:
+          OWNERSHIP_DB_URL: ${{ secrets.OWNERSHIP_DB_URL }}
+        run: |
+          curl -L "$OWNERSHIP_DB_URL" -o data/ownership.duckdb
+          ls -lh data/ownership.duckdb
+
+      - name: Verify DB Exists
+        run: |
+          if [ ! -f data/ownership.duckdb ]; then
+            echo "Missing data/ownership.duckdb. Seed one run from laptop first, then rerun workflow."
+            exit 1
+          fi
+          ls -lh data/ownership.duckdb
+
+      - name: Run Scheduled Daily Cycle
+        run: |
+          python src/pipeline/run_scheduled_daily_cycle_v1.py \
+            --db-path data/ownership.duckdb \
+            --max-repair-rounds 5 \
+            --bulk-lookback-days 180 \
+            --strict-rebalance-pretrade \
+            --allow-degraded-fallback \
+            --out-json data/reports/scheduled_daily_cycle_v1_latest.json
+
+      - name: Save DB Cache
+        if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/ownership.duckdb
+          key: ownership-duckdb-${{ github.run_id }}
+
+      - name: Upload Reports Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-ai-agent-reports
+          path: |
+            data/reports/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload DB Snapshot Artifact
+        if: ${{ always() && hashFiles('data/ownership.duckdb') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ownership-db-snapshot
+          path: data/ownership.duckdb
+          retention-days: 7
