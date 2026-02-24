@@ -87,23 +87,21 @@ jobs:
             exit 0
           fi
           mkdir -p /tmp/db_bootstrap
-          if echo "$OWNERSHIP_DB_URL" | grep -Eq "drive\\.google\\.com|drive\\.usercontent\\.google\\.com"; then
           python - << 'PY'
           import os
           import re
-          import gdown
+          import shutil
           import subprocess
+          import time
+          import zipfile
           from pathlib import Path
 
-          def _head_bytes(path: str) -> bytes:
-              p = Path(path)
-              if not p.exists():
-                  return b""
-              return p.read_bytes()[:512].lower()
+          import duckdb
 
-          def _is_html(path: str) -> bool:
-              h = _head_bytes(path)
-              return (b"<html" in h) or (b"<!doctype" in h)
+          seed = Path("/tmp/db_bootstrap/seed.bin")
+          out = Path("data/ownership.duckdb")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          raw_url = os.environ["OWNERSHIP_DB_URL"].strip()
 
           def _extract_drive_id(url: str) -> str:
               patterns = [
@@ -116,39 +114,89 @@ jobs:
                       return m.group(1)
               return ""
 
-          url = os.environ["OWNERSHIP_DB_URL"]
-          out = "/tmp/db_bootstrap/seed.bin"
-          ok = gdown.download(url=url, output=out, quiet=False, fuzzy=True)
-          if not ok:
-              raise SystemExit("gdown failed to download OWNERSHIP_DB_URL")
-          # Some Drive links can still return HTML in CI. Retry with direct URL.
-          if _is_html(out):
-              file_id = _extract_drive_id(url)
-              if file_id:
-                  direct = (
-                      "https://drive.usercontent.google.com/download"
-                      f"?id={file_id}&export=download&confirm=t"
-                  )
-                  subprocess.run(["curl", "-fL", direct, "-o", out], check=True)
-          if _is_html(out):
-              raise SystemExit(
-                  "Google Drive URL returned HTML instead of file bytes. "
-                  "Set OWNERSHIP_DB_URL to a direct downloadable URL and "
-                  "ensure file is shared with 'Anyone with the link'."
-              )
-          print("Google Drive download completed:", out)
-          PY
-          else
-            curl -fL "$OWNERSHIP_DB_URL" -o /tmp/db_bootstrap/seed.bin
-          fi
-          python - << 'PY'
-          from pathlib import Path
-          import shutil
-          import zipfile
+          def _candidate_urls(url: str) -> list[str]:
+              urls: list[str] = [url]
+              fid = _extract_drive_id(url)
+              if fid:
+                  urls.append(f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t")
+                  urls.append(f"https://drive.google.com/uc?export=download&id={fid}")
+              # preserve order, drop duplicates
+              out_u: list[str] = []
+              seen: set[str] = set()
+              for u in urls:
+                  if u and u not in seen:
+                      out_u.append(u)
+                      seen.add(u)
+              return out_u
 
-          src = Path("/tmp/db_bootstrap/seed.bin")
-          out = Path("data/ownership.duckdb")
-          out.parent.mkdir(parents=True, exist_ok=True)
+          def _download(url: str) -> bool:
+              seed.unlink(missing_ok=True)
+              cmd = [
+                  "curl",
+                  "-fL",
+                  "--retry", "6",
+                  "--retry-all-errors",
+                  "--retry-delay", "3",
+                  "--connect-timeout", "20",
+                  "--max-time", "600",
+                  url,
+                  "-o",
+                  str(seed),
+              ]
+              p = subprocess.run(cmd, capture_output=True, text=True)
+              if p.returncode != 0:
+                  print("download_failed:", url, "rc=", p.returncode)
+                  t = (p.stderr or p.stdout or "").strip()
+                  if t:
+                      print("download_error_tail:", t[-400:])
+                  return False
+              return seed.exists() and seed.stat().st_size > 0
+
+          def _seed_kind(path: Path) -> str:
+              if not path.exists() or path.stat().st_size == 0:
+                  return "empty"
+              head = path.read_bytes()[:512].lower()
+              if zipfile.is_zipfile(path):
+                  return "zip"
+              if (b"<html" in head) or (b"<!doctype" in head):
+                  return "html"
+              if b"internal server error" in head:
+                  return "server_error"
+              try:
+                  with duckdb.connect(str(path), read_only=True) as conn:
+                      conn.execute("SELECT 1").fetchone()
+                  return "duckdb"
+              except Exception:
+                  return "unknown"
+
+          selected_kind = None
+          selected_url = None
+          for cand in _candidate_urls(raw_url):
+              for attempt in range(1, 4):
+                  print(f"bootstrap_try url={cand} attempt={attempt}")
+                  ok = _download(cand)
+                  kind = _seed_kind(seed) if ok else "download_failed"
+                  print("seed_kind:", kind)
+                  if kind in {"zip", "duckdb"}:
+                      selected_kind = kind
+                      selected_url = cand
+                      break
+                  time.sleep(2.0)
+              if selected_kind is not None:
+                  break
+
+          if selected_kind is None:
+              head = seed.read_bytes()[:200] if seed.exists() else b""
+              raise SystemExit(
+                  "Bootstrap download did not return valid .duckdb/.zip bytes. "
+                  f"head={head!r}"
+              )
+
+          print("bootstrap_selected_url:", selected_url)
+          print("bootstrap_selected_kind:", selected_kind)
+
+          from pathlib import Path
+          src = seed
 
           # Support both raw .duckdb URLs and zipped snapshots.
           if zipfile.is_zipfile(src):
@@ -160,13 +208,10 @@ jobs:
               best = sorted(cand, key=lambda p: p.stat().st_size, reverse=True)[0]
               shutil.copy2(best, out)
           else:
-              head = src.read_bytes()[:512].lower()
-              if b"<html" in head or b"<!doctype" in head:
-                  raise SystemExit(
-                      "Bootstrap URL returned HTML, not a DB file. "
-                      "Use a direct download URL to .duckdb or .zip."
-                  )
               shutil.copy2(src, out)
+          # Final integrity check before proceeding.
+          with duckdb.connect(str(out), read_only=True) as conn:
+              conn.execute("SELECT 1").fetchone()
           print(f"Bootstrap DB written: {out}")
           PY
           ls -lh data/ownership.duckdb
@@ -197,7 +242,7 @@ jobs:
               print("File header preview:", head)
               raise SystemExit(
                   "Invalid ownership.duckdb in runner. "
-                  "OWNERSHIP_DB_URL likely points to HTML/preview URL, not direct file."
+                  "OWNERSHIP_DB_URL returned non-DB bytes (HTML/text/server error) or corrupt archive."
               )
           PY
 
