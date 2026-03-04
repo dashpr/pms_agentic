@@ -139,6 +139,38 @@ def _fetch_runtime_meta(remote_db_url: str) -> dict[str, Any]:
         return {}
 
 
+def _runtime_reports_base_url(remote_db_url: str) -> str:
+    u = str(remote_db_url or "").strip()
+    if not u:
+        return ""
+    if "/data/ownership_runtime.duckdb" in u:
+        return u.rsplit("/data/ownership_runtime.duckdb", 1)[0] + "/data/reports"
+    if u.endswith("/ownership_runtime.duckdb"):
+        return u.rsplit("/", 1)[0] + "/reports"
+    if u.endswith(".duckdb"):
+        return u.rsplit("/", 1)[0] + "/reports"
+    return ""
+
+
+@st.cache_data(ttl=300)
+def _fetch_remote_report_json(remote_db_url: str, filename: str) -> dict[str, Any]:
+    base = _runtime_reports_base_url(remote_db_url)
+    if not base:
+        return {}
+    url = f"{base}/{filename}"
+    try:
+        import requests
+    except Exception:
+        return {}
+    try:
+        r = requests.get(url, timeout=20)
+        if r.status_code != 200:
+            return {}
+        return _safe_json_load(r.text)
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=180)
 def _load_data_provenance(db_path: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
@@ -1020,6 +1052,36 @@ def main() -> None:
     if not buy_rows and not exit_rows:
         st.info("No symbol-level entries/exits vs previous rebalance snapshot.")
 
+    st.markdown("**Rebalance History (Recent Wednesdays)**")
+    rb_hist_rows: list[dict[str, Any]] = []
+    if not wed_runs.empty:
+        rb_candidates = wed_runs.head(8).copy().reset_index(drop=True)
+        for i, rr in rb_candidates.iterrows():
+            rid = str(rr["run_id"])
+            rts = pd.to_datetime(rr["run_ts"])
+            asof = pd.to_datetime(rr["as_of_date"]).date()
+            pf_cur = portfolio[portfolio["run_id"] == rid].copy()
+            cur_syms_i = set(pf_cur["symbol"].astype(str).str.upper().tolist()) if not pf_cur.empty else set()
+            prev_syms_i: set[str] = set()
+            if i + 1 < len(rb_candidates):
+                prev_rid_i = str(rb_candidates.iloc[i + 1]["run_id"])
+                pf_prev_i = portfolio[portfolio["run_id"] == prev_rid_i].copy()
+                prev_syms_i = set(pf_prev_i["symbol"].astype(str).str.upper().tolist()) if not pf_prev_i.empty else set()
+            rb_hist_rows.append(
+                {
+                    "run_ts": str(rts),
+                    "as_of_date": str(asof),
+                    "run_id": rid[:16],
+                    "positions": int(len(cur_syms_i)),
+                    "new_buys": int(len(cur_syms_i - prev_syms_i)),
+                    "exits": int(len(prev_syms_i - cur_syms_i)),
+                }
+            )
+    if rb_hist_rows:
+        st.dataframe(pd.DataFrame(rb_hist_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No Wednesday rebalance history available yet.")
+
     st.markdown("**Rebalance Order Sheet (Zerodha Upload Helper)**")
     all_syms = sorted(set(latest_w_map.keys()) | set(prev_w_map.keys()))
     order_rows = []
@@ -1319,8 +1381,12 @@ def main() -> None:
     ref = locked_reference_metrics()
     rc_path = Path("data/reports/release_checks_ai_agent_stable_v1.json")
     rc = _safe_json_load(rc_path.read_text(encoding="utf-8")) if rc_path.exists() else {}
+    if not rc and remote_db_url:
+        rc = _fetch_remote_report_json(remote_db_url, "release_checks_ai_agent_stable_v1.json")
     model_report_path = Path("data/reports/ai_agent_stable_stocks_v1_latest.json")
     model_report = _safe_json_load(model_report_path.read_text(encoding="utf-8")) if model_report_path.exists() else {}
+    if not model_report and remote_db_url:
+        model_report = _fetch_remote_report_json(remote_db_url, "ai_agent_stable_stocks_v1_latest.json")
     rebalance_allowed = bool(
         (
             ((model_report.get("pretrade_gate") or {}).get("rebalance_allowed"))
@@ -1385,6 +1451,8 @@ def main() -> None:
     runtime_snapshot_mode = Path(db_path).name.lower() == "ownership_runtime.duckdb"
     has_incremental_report = Path("data/reports/incremental_cycle_latest.json").exists()
     has_scheduled_report = Path("data/reports/scheduled_daily_cycle_v1_latest.json").exists()
+    remote_scheduled_report = _fetch_remote_report_json(remote_db_url, "scheduled_daily_cycle_v1_latest.json") if remote_db_url else {}
+    has_remote_scheduled_report = bool(remote_scheduled_report)
 
     ops_rows = [
         {
@@ -1433,7 +1501,7 @@ def main() -> None:
             "item": "Daily automation report",
             "status": (
                 "OK"
-                if (has_incremental_report or has_scheduled_report)
+                if (has_incremental_report or has_scheduled_report or has_remote_scheduled_report)
                 else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
             ),
             "action": "Run daily automation cycle.",
@@ -1505,15 +1573,20 @@ def main() -> None:
 
     cycle_report_path = Path("data/reports/incremental_cycle_latest.json")
     scheduled_report_path = Path("data/reports/scheduled_daily_cycle_v1_latest.json")
-    selected_cycle_path = cycle_report_path if cycle_report_path.exists() else (
-        scheduled_report_path if scheduled_report_path.exists() else None
-    )
+    selected_cycle_path = cycle_report_path if cycle_report_path.exists() else (scheduled_report_path if scheduled_report_path.exists() else None)
+    selected_cycle_name = selected_cycle_path.name if selected_cycle_path is not None else ""
     if selected_cycle_path is not None:
         cyc = _safe_json_load(selected_cycle_path.read_text(encoding="utf-8"))
+    else:
+        cyc = {}
+        if has_remote_scheduled_report:
+            cyc = remote_scheduled_report
+            selected_cycle_name = "scheduled_daily_cycle_v1_latest.json (remote)"
+    if cyc:
         st.markdown("**Daily Automation Snapshot**")
         st.write(
             {
-                "source_report": selected_cycle_path.name,
+                "source_report": selected_cycle_name,
                 "last_cycle_as_of_date": cyc.get("as_of_date"),
                 "last_cycle_repair_as_of_date": cyc.get("repair_as_of_date"),
                 "version_snapshot": cyc.get("version_snapshot", {}),

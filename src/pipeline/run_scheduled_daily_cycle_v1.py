@@ -10,6 +10,12 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+try:
+    from src.qa.pipeline_health_v1 import compute_pipeline_health
+except ModuleNotFoundError:
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from src.qa.pipeline_health_v1 import compute_pipeline_health
 
 
 def parse_args(argv=None):
@@ -83,6 +89,34 @@ def _run_step(name: str, cmd: list[str], cwd: Path) -> dict[str, Any]:
     }
 
 
+def _freshness_gate(
+    db_path: str,
+    as_of: date,
+    strict_rebalance_pretrade: bool,
+) -> dict[str, Any]:
+    required = {"prices_daily_v1", "delivery_daily_v1"}
+    if bool(strict_rebalance_pretrade):
+        required.add("bulk_block_deals")
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        h = compute_pipeline_health(
+            conn=conn,
+            as_of_date=as_of,
+            require_news=False,
+            require_fundamentals=False,
+        )
+    z = h[h["pipeline"].isin(sorted(required))].copy()
+    z["status"] = z["status"].astype(str).str.upper()
+    fail = z[z["status"] != "WORKING"].copy()
+    return {
+        "as_of_date": as_of.isoformat(),
+        "required_pipelines": sorted(required),
+        "passed": bool(fail.empty),
+        "failing": fail[
+            ["pipeline", "status", "last_date", "lag_days", "message"]
+        ].to_dict(orient="records"),
+    }
+
+
 def main(argv=None):
     args = parse_args(argv)
     repo = Path(__file__).resolve().parents[2]
@@ -112,7 +146,7 @@ def main(argv=None):
             "error": f"DB missing: {db_file}",
             "steps": [],
         }
-        out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, default=str), encoding="utf-8")
         raise SystemExit(1)
 
     steps: list[dict[str, Any]] = []
@@ -159,6 +193,22 @@ def main(argv=None):
         )
     )
 
+    repair_gate = _freshness_gate(
+        db_path=db_path,
+        as_of=date.fromisoformat(str(repair_as_of)),
+        strict_rebalance_pretrade=bool(args.strict_rebalance_pretrade),
+    )
+    steps.append(
+        {
+            "step": "required_freshness_gate",
+            "cmd": "internal_freshness_gate",
+            "returncode": 0 if bool(repair_gate.get("passed")) else 1,
+            "status": "OK" if bool(repair_gate.get("passed")) else "ERROR",
+            "stdout_tail": "",
+            "stderr_tail": "" if bool(repair_gate.get("passed")) else json.dumps(repair_gate.get("failing", []), ensure_ascii=True, default=str),
+        }
+    )
+
     # Resolve decision as-of after repair has had a chance to refresh prices.
     decision_as_of = (
         str(args.as_of_date)
@@ -166,52 +216,65 @@ def main(argv=None):
         else _resolve_as_of(None, db_path).isoformat()
     )
 
-    strict_cmd = [
-        py,
-        "src/agentic/run_ai_agent_stable_stocks_v1.py",
-        "--db-path",
-        db_path,
-        "--mode",
-        "decision",
-        "--as-of-date",
-        decision_as_of,
-        "--out-json",
-        "data/reports/ai_agent_stable_stocks_v1_latest.json",
-    ]
-    if bool(args.strict_rebalance_pretrade):
-        strict_cmd.append("--strict-rebalance-pretrade")
-    strict_res = _run_step("locked_decision_strict", strict_cmd, cwd=repo)
-    steps.append(strict_res)
+    decision_mode = "SKIPPED_FRESHNESS_BLOCK"
+    strict_res = {
+        "step": "locked_decision_strict",
+        "cmd": "",
+        "returncode": 1,
+        "status": "ERROR",
+        "stdout_tail": "",
+        "stderr_tail": "Skipped due to failed required_freshness_gate",
+    }
+    if bool(repair_gate.get("passed")):
+        strict_cmd = [
+            py,
+            "src/agentic/run_ai_agent_stable_stocks_v1.py",
+            "--db-path",
+            db_path,
+            "--mode",
+            "decision",
+            "--as-of-date",
+            decision_as_of,
+            "--out-json",
+            "data/reports/ai_agent_stable_stocks_v1_latest.json",
+        ]
+        if bool(args.strict_rebalance_pretrade):
+            strict_cmd.append("--strict-rebalance-pretrade")
+        strict_res = _run_step("locked_decision_strict", strict_cmd, cwd=repo)
+        steps.append(strict_res)
 
-    decision_mode = "STRICT" if strict_res["status"] == "OK" else "FAILED"
-    if strict_res["status"] != "OK" and bool(args.allow_degraded_fallback):
-        fallback_res = _run_step(
-            "locked_decision_degraded_fallback",
-            [
-                py,
-                "src/agentic/run_ai_agent_stable_stocks_v1.py",
-                "--db-path",
-                db_path,
-                "--mode",
-                "decision",
-                "--as-of-date",
-                decision_as_of,
-                "--out-json",
-                "data/reports/ai_agent_stable_stocks_v1_latest.json",
-            ],
-            cwd=repo,
-        )
-        steps.append(fallback_res)
-        if fallback_res["status"] == "OK":
-            decision_mode = "DEGRADED_FALLBACK"
+        decision_mode = "STRICT" if strict_res["status"] == "OK" else "FAILED"
+        if strict_res["status"] != "OK" and bool(args.allow_degraded_fallback):
+            fallback_res = _run_step(
+                "locked_decision_degraded_fallback",
+                [
+                    py,
+                    "src/agentic/run_ai_agent_stable_stocks_v1.py",
+                    "--db-path",
+                    db_path,
+                    "--mode",
+                    "decision",
+                    "--as-of-date",
+                    decision_as_of,
+                    "--out-json",
+                    "data/reports/ai_agent_stable_stocks_v1_latest.json",
+                ],
+                cwd=repo,
+            )
+            steps.append(fallback_res)
+            if fallback_res["status"] == "OK":
+                decision_mode = "DEGRADED_FALLBACK"
+    else:
+        steps.append(strict_res)
 
-    overall_ok = decision_mode in {"STRICT", "DEGRADED_FALLBACK"}
+    overall_ok = bool(repair_gate.get("passed")) and (decision_mode in {"STRICT", "DEGRADED_FALLBACK"})
     payload = {
         "as_of_date": decision_as_of,
         "as_of_date_initial": decision_as_of_initial,
         "repair_as_of_date": repair_as_of,
         "status": "OK" if overall_ok else "ERROR",
         "decision_mode": decision_mode,
+        "required_freshness_gate": repair_gate,
         "strict_rebalance_pretrade": bool(args.strict_rebalance_pretrade),
         "allow_degraded_fallback": bool(args.allow_degraded_fallback),
         "steps": steps,
@@ -220,12 +283,13 @@ def main(argv=None):
             "pipeline_health": "data/reports/repair_required_pipelines_v1_latest.json",
         },
     }
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, default=str), encoding="utf-8")
 
     print("===== SCHEDULED DAILY CYCLE v1 =====")
     print("decision_as_of_date_initial:", decision_as_of_initial)
     print("decision_as_of_date:", decision_as_of)
     print("repair_as_of_date:", repair_as_of)
+    print("required_freshness_gate_passed:", bool(repair_gate.get("passed")))
     print("status:", payload["status"])
     print("decision_mode:", decision_mode)
     if not overall_ok:
