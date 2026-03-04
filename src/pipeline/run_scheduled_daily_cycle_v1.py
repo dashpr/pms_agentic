@@ -15,7 +15,11 @@ import pandas as pd
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Scheduled daily automation cycle (cloud/local)")
     p.add_argument("--db-path", default="data/ownership.duckdb")
-    p.add_argument("--as-of-date", default=None, help="YYYY-MM-DD; default latest prices_daily_v1 date")
+    p.add_argument(
+        "--as-of-date",
+        default=None,
+        help="YYYY-MM-DD; if omitted, decision uses latest market date after repair and repair checks use UTC today.",
+    )
     p.add_argument("--max-repair-rounds", type=int, default=5)
     p.add_argument("--price-csv-dir", default="data/csvs")
     p.add_argument("--prices-stale-days", type=int, default=1)
@@ -84,7 +88,12 @@ def main(argv=None):
     repo = Path(__file__).resolve().parents[2]
     py = str(Path(sys.executable))
     db_path = str(args.db_path)
-    as_of = _resolve_as_of(args.as_of_date, db_path).isoformat()
+    decision_as_of_initial = _resolve_as_of(args.as_of_date, db_path).isoformat()
+    repair_as_of = (
+        str(args.as_of_date)
+        if args.as_of_date
+        else pd.Timestamp.now(tz="UTC").date().isoformat()
+    )
     out_path = Path(str(args.out_json))
     if not out_path.is_absolute():
         out_path = repo / out_path
@@ -96,7 +105,9 @@ def main(argv=None):
         db_file = Path(db_path)
     if not db_file.exists():
         payload = {
-            "as_of_date": as_of,
+            "as_of_date": decision_as_of_initial,
+            "as_of_date_initial": decision_as_of_initial,
+            "repair_as_of_date": repair_as_of,
             "status": "ERROR",
             "error": f"DB missing: {db_file}",
             "steps": [],
@@ -115,7 +126,7 @@ def main(argv=None):
                 "--db-path",
                 db_path,
                 "--as-of-date",
-                as_of,
+                repair_as_of,
                 "--max-rounds",
                 str(int(args.max_repair_rounds)),
                 "--price-csv-dir",
@@ -141,11 +152,18 @@ def main(argv=None):
                 "--db-path",
                 db_path,
                 "--as-of-date",
-                as_of,
+                repair_as_of,
                 "--persist",
             ],
             cwd=repo,
         )
+    )
+
+    # Resolve decision as-of after repair has had a chance to refresh prices.
+    decision_as_of = (
+        str(args.as_of_date)
+        if args.as_of_date
+        else _resolve_as_of(None, db_path).isoformat()
     )
 
     strict_cmd = [
@@ -156,7 +174,7 @@ def main(argv=None):
         "--mode",
         "decision",
         "--as-of-date",
-        as_of,
+        decision_as_of,
         "--out-json",
         "data/reports/ai_agent_stable_stocks_v1_latest.json",
     ]
@@ -177,7 +195,7 @@ def main(argv=None):
                 "--mode",
                 "decision",
                 "--as-of-date",
-                as_of,
+                decision_as_of,
                 "--out-json",
                 "data/reports/ai_agent_stable_stocks_v1_latest.json",
             ],
@@ -189,7 +207,9 @@ def main(argv=None):
 
     overall_ok = decision_mode in {"STRICT", "DEGRADED_FALLBACK"}
     payload = {
-        "as_of_date": as_of,
+        "as_of_date": decision_as_of,
+        "as_of_date_initial": decision_as_of_initial,
+        "repair_as_of_date": repair_as_of,
         "status": "OK" if overall_ok else "ERROR",
         "decision_mode": decision_mode,
         "strict_rebalance_pretrade": bool(args.strict_rebalance_pretrade),
@@ -203,7 +223,9 @@ def main(argv=None):
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     print("===== SCHEDULED DAILY CYCLE v1 =====")
-    print("as_of_date:", as_of)
+    print("decision_as_of_date_initial:", decision_as_of_initial)
+    print("decision_as_of_date:", decision_as_of)
+    print("repair_as_of_date:", repair_as_of)
     print("status:", payload["status"])
     print("decision_mode:", decision_mode)
     if not overall_ok:

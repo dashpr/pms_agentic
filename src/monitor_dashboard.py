@@ -713,8 +713,9 @@ def _build_symbol_advisor(
 @st.cache_data(ttl=300)
 def _load_pipeline_health(db_path: str) -> pd.DataFrame:
     with duckdb.connect(db_path, read_only=True) as conn:
-        px_max = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
-        as_of = pd.to_datetime(px_max).date() if px_max is not None else pd.Timestamp.utcnow().date()
+        # Freshness must be evaluated against "today", not max table date,
+        # otherwise stale pipelines can appear falsely healthy.
+        as_of = pd.Timestamp.now(tz="UTC").date()
         h = compute_pipeline_health(
             conn=conn,
             as_of_date=as_of,
@@ -801,9 +802,12 @@ def main() -> None:
     latest_run_id = str(latest_run["run_id"])
     latest_as_of = pd.to_datetime(latest_run["as_of_date"]).date()
     runs_sorted = runs.sort_values("run_ts", ascending=False).reset_index(drop=True)
-    older_date_runs = runs_sorted[runs_sorted["as_of_date"] < pd.Timestamp(latest_as_of)]
-    if not older_date_runs.empty:
-        prev_run_id = str(older_date_runs.iloc[0]["run_id"])
+    latest_run_ts = pd.to_datetime(latest_run["run_ts"])
+    prev_distinct_day_runs = runs_sorted[
+        _to_dt_ns(runs_sorted["run_ts"]).dt.date < pd.Timestamp(latest_run_ts).date()
+    ]
+    if not prev_distinct_day_runs.empty:
+        prev_run_id = str(prev_distinct_day_runs.iloc[0]["run_id"])
     elif len(runs_sorted) > 1:
         prev_run_id = str(runs_sorted.iloc[1]["run_id"])
     else:
@@ -910,6 +914,15 @@ def main() -> None:
         {"key": "runtime_meta.source_sha", "value": str(remote_runtime_meta.get("source_sha", "-"))},
         {"key": "runtime_meta.source_run_id", "value": str(remote_runtime_meta.get("source_run_id", "-"))},
     ]
+    latest_run_asof_ts = pd.to_datetime(provenance.get("latest_run_asof"), errors="coerce")
+    if pd.notna(latest_run_asof_ts):
+        run_asof_lag_days = int((pd.Timestamp.now(tz="UTC").date() - latest_run_asof_ts.date()).days)
+        prov_rows.append({"key": "latest_run_asof_lag_days", "value": run_asof_lag_days})
+        if run_asof_lag_days > 1:
+            st.warning(
+                f"Latest decision as-of is stale by {run_asof_lag_days} day(s). "
+                "Automation is running, but market data refresh is lagging."
+            )
     st.dataframe(pd.DataFrame(prov_rows), hide_index=True, use_container_width=True)
 
     st.subheader("Weekly Rebalance Tracker")
@@ -919,19 +932,32 @@ def main() -> None:
     countdown = next_rebalance_dt - now_utc
     cd_days = max(int(countdown.total_seconds() // 86400), 0)
     cd_hours = max(int((countdown.total_seconds() % 86400) // 3600), 0)
-    wed_runs = runs_sorted[runs_sorted["as_of_date"].dt.weekday == rebalance_weekday]
-    last_rebalance_date = (
-        pd.to_datetime(wed_runs.iloc[0]["as_of_date"]).date() if not wed_runs.empty else latest_as_of
-    )
-    last_rebalance_run_id = str(wed_runs.iloc[0]["run_id"]) if not wed_runs.empty else latest_run_id
-    prev_rebalance_run_id = (
-        str(wed_runs.iloc[1]["run_id"])
-        if len(wed_runs) > 1
-        else (prev_run_id if prev_run_id else "")
-    )
+    run_ts_series = _to_dt_ns(runs_sorted["run_ts"])
+    wed_runs = runs_sorted[run_ts_series.dt.weekday == rebalance_weekday]
+    if not wed_runs.empty:
+        last_rebalance_run_id = str(wed_runs.iloc[0]["run_id"])
+        last_rebalance_ts = pd.to_datetime(wed_runs.iloc[0]["run_ts"])
+    else:
+        # Fallback: no Wednesday execution found yet, use latest execution snapshot.
+        last_rebalance_run_id = latest_run_id
+        last_rebalance_ts = pd.to_datetime(latest_run["run_ts"])
+    last_rebalance_date = pd.Timestamp(last_rebalance_ts).date()
+
+    prev_reb_candidates = runs_sorted[
+        _to_dt_ns(runs_sorted["run_ts"]) < pd.Timestamp(last_rebalance_ts)
+    ].copy()
+    prev_reb_distinct_day = prev_reb_candidates[
+        _to_dt_ns(prev_reb_candidates["run_ts"]).dt.date < pd.Timestamp(last_rebalance_ts).date()
+    ]
+    if not prev_reb_distinct_day.empty:
+        prev_rebalance_run_id = str(prev_reb_distinct_day.iloc[0]["run_id"])
+    elif not prev_reb_candidates.empty:
+        prev_rebalance_run_id = str(prev_reb_candidates.iloc[0]["run_id"])
+    else:
+        prev_rebalance_run_id = (prev_run_id if prev_run_id else "")
     today_utc = now_utc.date()
     this_week_wed = (pd.Timestamp(today_utc) - pd.Timedelta(days=pd.Timestamp(today_utc).weekday()) + pd.Timedelta(days=2)).date()
-    rebalance_done_today = bool(last_rebalance_date == today_utc and today_utc.weekday() == rebalance_weekday)
+    rebalance_done_today = bool(last_rebalance_date == today_utc and pd.Timestamp(last_rebalance_ts).weekday() == rebalance_weekday)
     rebalance_done_this_week = bool(last_rebalance_date >= this_week_wed)
     rebalance_status = (
         "DONE_TODAY"
@@ -1357,6 +1383,8 @@ def main() -> None:
         )
 
     runtime_snapshot_mode = Path(db_path).name.lower() == "ownership_runtime.duckdb"
+    has_incremental_report = Path("data/reports/incremental_cycle_latest.json").exists()
+    has_scheduled_report = Path("data/reports/scheduled_daily_cycle_v1_latest.json").exists()
 
     ops_rows = [
         {
@@ -1405,7 +1433,7 @@ def main() -> None:
             "item": "Daily automation report",
             "status": (
                 "OK"
-                if Path("data/reports/incremental_cycle_latest.json").exists()
+                if (has_incremental_report or has_scheduled_report)
                 else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
             ),
             "action": "Run daily automation cycle.",
@@ -1487,6 +1515,7 @@ def main() -> None:
             {
                 "source_report": selected_cycle_path.name,
                 "last_cycle_as_of_date": cyc.get("as_of_date"),
+                "last_cycle_repair_as_of_date": cyc.get("repair_as_of_date"),
                 "version_snapshot": cyc.get("version_snapshot", {}),
                 "status": cyc.get("status"),
                 "decision_mode": cyc.get("decision_mode"),
@@ -1512,17 +1541,33 @@ def main() -> None:
             "locked_decision": "Run locked model runner manually and inspect logs.",
         }
         rows = []
-        for step, payload in (cyc.get("steps") or {}).items():
-            status = str((payload or {}).get("status", "UNKNOWN")).upper()
-            rows.append(
-                {
-                    "step": step,
-                    "status": status,
-                    "action": step_actions.get(step, "Review step output."),
-                    "details": str((payload or {}).get("error", ""))[:180],
-                    "how_to_fix": step_fix.get(step, "Run --daily-auto and inspect this step status."),
-                }
-            )
+        raw_steps = cyc.get("steps") or {}
+        if isinstance(raw_steps, dict):
+            for step, payload in raw_steps.items():
+                status = str((payload or {}).get("status", "UNKNOWN")).upper()
+                rows.append(
+                    {
+                        "step": step,
+                        "status": status,
+                        "action": step_actions.get(step, "Review step output."),
+                        "details": str((payload or {}).get("error", ""))[:180],
+                        "how_to_fix": step_fix.get(step, "Run --daily-auto and inspect this step status."),
+                    }
+                )
+        elif isinstance(raw_steps, list):
+            for payload in raw_steps:
+                step = str((payload or {}).get("step", "unknown"))
+                status = str((payload or {}).get("status", "UNKNOWN")).upper()
+                details = str((payload or {}).get("stderr_tail") or (payload or {}).get("stdout_tail") or "")[:180]
+                rows.append(
+                    {
+                        "step": step,
+                        "status": status,
+                        "action": step_actions.get(step, "Review step output."),
+                        "details": details,
+                        "how_to_fix": step_fix.get(step, "Inspect workflow logs for this failed step."),
+                    }
+                )
         if rows:
             ds = pd.DataFrame(rows)
             ds_sty = ds.style.apply(
