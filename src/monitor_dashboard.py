@@ -883,14 +883,34 @@ def main() -> None:
     signals_latest["symbol"] = signals_latest["symbol"].astype(str).str.upper()
 
     bt_runs = bundle["bt_runs"].copy()
+    bt_equity = bundle["bt_equity"].copy()
     bt_runs["run_ts"] = _to_dt_ns(bt_runs["run_ts"])
-    latest_bt_cagr = 0.0
+    latest_bt_total_return = np.nan
+    latest_bt_cagr = np.nan
+    latest_bt_run_id = ""
+    latest_bt_start_date = None
     latest_bt_end_date = None
     if not bt_runs.empty:
         latest_bt_row = bt_runs.sort_values("run_ts", ascending=False).iloc[0]
+        latest_bt_run_id = str(latest_bt_row.get("run_id", ""))
         stz = _safe_json_load(latest_bt_row["stats_json"])
-        latest_bt_cagr = float(stz.get("CAGR", 0.0))
+        latest_bt_total_return = pd.to_numeric(stz.get("Total Return"), errors="coerce")
+        latest_bt_cagr = pd.to_numeric(stz.get("CAGR"), errors="coerce")
+        latest_bt_start_date = pd.to_datetime(latest_bt_row.get("start_date"), errors="coerce")
         latest_bt_end_date = pd.to_datetime(latest_bt_row.get("end_date"), errors="coerce")
+        if (pd.isna(latest_bt_total_return) or pd.isna(latest_bt_cagr)) and (not bt_equity.empty) and latest_bt_run_id:
+            eq = bt_equity[bt_equity["run_id"].astype(str) == latest_bt_run_id].copy()
+            if not eq.empty:
+                eq["date"] = _to_dt_ns(eq["date"])
+                eq["equity"] = pd.to_numeric(eq["equity"], errors="coerce")
+                eq = eq.dropna(subset=["date", "equity"]).sort_values("date")
+                if len(eq) >= 2:
+                    first_eq = float(eq.iloc[0]["equity"])
+                    last_eq = float(eq.iloc[-1]["equity"])
+                    if first_eq > 0:
+                        latest_bt_total_return = (last_eq / first_eq) - 1.0
+                        yrs = max((eq.iloc[-1]["date"] - eq.iloc[0]["date"]).days / 365.25, 1.0 / 365.25)
+                        latest_bt_cagr = (last_eq / first_eq) ** (1.0 / yrs) - 1.0
 
     quotes_db = bundle["quotes_db"].copy()
     quotes_db["symbol"] = quotes_db["symbol"].astype(str).str.upper()
@@ -914,16 +934,28 @@ def main() -> None:
         latency_days = int((now_naive.normalize() - px_naive.normalize()).days)
 
     st.subheader("Live Snapshot")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Snapshot Time", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
     c2.metric("Model As Of", str(latest_as_of))
     c3.metric("Regime", str(regime.get("label", "unknown")).upper())
     c4.metric("Portfolio", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
-    c5.metric("Latest Backtest CAGR", f"{latest_bt_cagr:.2%}")
-    c6.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
-    if latest_bt_end_date is not None and pd.notna(latest_bt_end_date):
-        bt_lag_days = int((pd.Timestamp.now(tz="UTC").date() - latest_bt_end_date.date()).days)
-        st.caption(f"Backtest metric as-of {latest_bt_end_date.date()} (lag {bt_lag_days} days).")
+    c5.metric(
+        "Assumed Portfolio Gain",
+        "-" if pd.isna(latest_bt_total_return) else f"{float(latest_bt_total_return):.2%}",
+    )
+    c6.metric(
+        "Assumed CAGR",
+        "-" if pd.isna(latest_bt_cagr) else f"{float(latest_bt_cagr):.2%}",
+    )
+    c7.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
+    if latest_bt_run_id:
+        sd = str(latest_bt_start_date.date()) if latest_bt_start_date is not None and pd.notna(latest_bt_start_date) else "-"
+        ed = str(latest_bt_end_date.date()) if latest_bt_end_date is not None and pd.notna(latest_bt_end_date) else "-"
+        cap = f"Assumed execution metrics from backtest run {latest_bt_run_id[:14]} | window {sd} to {ed}."
+        if latest_bt_end_date is not None and pd.notna(latest_bt_end_date):
+            bt_lag_days = int((pd.Timestamp.now(tz="UTC").date() - latest_bt_end_date.date()).days)
+            cap = cap + f" Metric lag: {bt_lag_days} day(s)."
+        st.caption(cap)
 
     st.subheader("Data Provenance")
     p1, p2, p3, p4 = st.columns(4)
@@ -1320,7 +1352,6 @@ def main() -> None:
         st.dataframe(_style_signal_and_change(wv, "signal", "db_change_1d_pct"), hide_index=True, use_container_width=True)
 
     st.subheader("Backtest Analytics")
-    bt_equity = bundle["bt_equity"].copy()
     bt_trades = bundle["bt_trades"].copy()
     if bt_runs.empty or bt_equity.empty:
         st.warning("No persisted backtest data found.")
