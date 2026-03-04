@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -303,6 +304,19 @@ def _style_signal_and_change(
         )
         sty = sty.format({"fusion_score_display": lambda v: str(v)})
     return sty
+
+
+def _df_to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as xw:
+        for name, df in sheets.items():
+            safe = str(name)[:31]
+            (df if isinstance(df, pd.DataFrame) else pd.DataFrame()).to_excel(
+                xw,
+                sheet_name=safe,
+                index=False,
+            )
+    return bio.getvalue()
 
 
 def _signal_strength_label(
@@ -909,15 +923,37 @@ def main() -> None:
     last_rebalance_date = (
         pd.to_datetime(wed_runs.iloc[0]["as_of_date"]).date() if not wed_runs.empty else latest_as_of
     )
+    last_rebalance_run_id = str(wed_runs.iloc[0]["run_id"]) if not wed_runs.empty else latest_run_id
+    prev_rebalance_run_id = (
+        str(wed_runs.iloc[1]["run_id"])
+        if len(wed_runs) > 1
+        else (prev_run_id if prev_run_id else "")
+    )
+    today_utc = now_utc.date()
+    this_week_wed = (pd.Timestamp(today_utc) - pd.Timedelta(days=pd.Timestamp(today_utc).weekday()) + pd.Timedelta(days=2)).date()
+    rebalance_done_today = bool(last_rebalance_date == today_utc and today_utc.weekday() == rebalance_weekday)
+    rebalance_done_this_week = bool(last_rebalance_date >= this_week_wed)
+    rebalance_status = (
+        "DONE_TODAY"
+        if rebalance_done_today
+        else ("DONE_THIS_WEEK" if rebalance_done_this_week else ("PENDING_TODAY" if today_utc.weekday() == rebalance_weekday else "PENDING"))
+    )
     rb1, rb2, rb3 = st.columns(3)
     rb1.metric("Last Rebalance Date", str(last_rebalance_date))
     rb2.metric("Next Rebalance Date", str(next_rebalance_dt.date()))
     rb3.metric("Countdown", f"{cd_days}d {cd_hours}h")
+    st.caption(f"Rebalance status: {rebalance_status} | run_id: {last_rebalance_run_id[:16]}")
 
-    prev_portfolio = portfolio[portfolio["run_id"] == prev_run_id].copy() if prev_run_id else pd.DataFrame()
-    prev_portfolio["symbol"] = prev_portfolio["symbol"].astype(str).str.upper() if not prev_portfolio.empty else pd.Series(dtype=str)
+    rebalance_portfolio = portfolio[portfolio["run_id"] == last_rebalance_run_id].copy() if last_rebalance_run_id else pd.DataFrame()
+    rebalance_portfolio["symbol"] = (
+        rebalance_portfolio["symbol"].astype(str).str.upper() if not rebalance_portfolio.empty else pd.Series(dtype=str)
+    )
+    prev_portfolio = portfolio[portfolio["run_id"] == prev_rebalance_run_id].copy() if prev_rebalance_run_id else pd.DataFrame()
+    prev_portfolio["symbol"] = (
+        prev_portfolio["symbol"].astype(str).str.upper() if not prev_portfolio.empty else pd.Series(dtype=str)
+    )
     prev_syms = set(prev_portfolio["symbol"].tolist()) if not prev_portfolio.empty else set()
-    cur_syms = set(portfolio_latest["symbol"].astype(str).str.upper().tolist()) if not portfolio_latest.empty else set()
+    cur_syms = set(rebalance_portfolio["symbol"].tolist()) if not rebalance_portfolio.empty else set()
     bought = sorted(cur_syms - prev_syms)
     exited = sorted(prev_syms - cur_syms)
 
@@ -928,8 +964,8 @@ def main() -> None:
         .to_dict()
     )
     latest_w_map = (
-        portfolio_latest.set_index(portfolio_latest["symbol"].astype(str).str.upper())["target_weight"].to_dict()
-        if not portfolio_latest.empty
+        rebalance_portfolio.set_index(rebalance_portfolio["symbol"].astype(str).str.upper())["target_weight"].to_dict()
+        if not rebalance_portfolio.empty
         else {}
     )
     prev_w_map = (
@@ -955,6 +991,67 @@ def main() -> None:
     rr1.dataframe(pd.DataFrame(buy_rows), hide_index=True, use_container_width=True)
     rr2.markdown("**Exits (vs previous rebalance run)**")
     rr2.dataframe(pd.DataFrame(exit_rows), hide_index=True, use_container_width=True)
+    if not buy_rows and not exit_rows:
+        st.info("No symbol-level entries/exits vs previous rebalance snapshot.")
+
+    st.markdown("**Rebalance Order Sheet (Zerodha Upload Helper)**")
+    all_syms = sorted(set(latest_w_map.keys()) | set(prev_w_map.keys()))
+    order_rows = []
+    for s in all_syms:
+        tgt_w = float(latest_w_map.get(s, 0.0))
+        prv_w = float(prev_w_map.get(s, 0.0))
+        delta_w = float(tgt_w - prv_w)
+        if abs(delta_w) < 1e-6:
+            continue
+        px = float(price_map.get(s, np.nan)) if s in price_map else np.nan
+        qty = int((float(tracking_capital_inr) * abs(delta_w)) / px) if np.isfinite(px) and px > 0 else 0
+        txn = "BUY" if delta_w > 0 else "SELL"
+        order_rows.append(
+            {
+                "tradingsymbol": f"{s}",
+                "exchange": "NSE",
+                "transaction_type": txn,
+                "quantity": int(max(qty, 0)),
+                "order_type": "MARKET",
+                "product": "CNC",
+                "validity": "DAY",
+                "last_price": round(px, 2) if np.isfinite(px) else np.nan,
+                "prev_weight_pct": round(prv_w * 100.0, 2),
+                "target_weight_pct": round(tgt_w * 100.0, 2),
+                "delta_weight_pct": round(delta_w * 100.0, 2),
+                "as_of_date": str(last_rebalance_date),
+                "run_id": last_rebalance_run_id,
+            }
+        )
+    orders_df = pd.DataFrame(order_rows)
+    if orders_df.empty:
+        st.info("No rebalance orders generated (weights unchanged vs previous rebalance snapshot).")
+    else:
+        st.dataframe(orders_df, hide_index=True, use_container_width=True)
+        cdl1, cdl2 = st.columns(2)
+        csv_bytes = orders_df.to_csv(index=False).encode("utf-8")
+        cdl1.download_button(
+            "Download Rebalance CSV",
+            data=csv_bytes,
+            file_name=f"zerodha_rebalance_orders_{last_rebalance_date}.csv",
+            mime="text/csv",
+        )
+        try:
+            xlsx_bytes = _df_to_excel_bytes(
+                {
+                    "orders": orders_df,
+                    "new_buys": pd.DataFrame(buy_rows),
+                    "exits": pd.DataFrame(exit_rows),
+                }
+            )
+            cdl2.download_button(
+                "Download Rebalance Excel",
+                data=xlsx_bytes,
+                file_name=f"zerodha_rebalance_orders_{last_rebalance_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception as e:
+            cdl2.warning(f"Excel export unavailable: {e}")
 
     st.subheader("Agent Weights")
     w_df = pd.DataFrame(
