@@ -142,6 +142,7 @@ def main(argv=None):
                     "--out-dir",
                     str(args.price_csv_dir),
                     "--refresh-existing",
+                    "--prefer-nse-bhavcopy",
                     "--stale-days",
                     str(int(args.prices_stale_days)),
                     "--sleep-ms",
