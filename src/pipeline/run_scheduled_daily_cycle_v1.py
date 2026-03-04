@@ -94,8 +94,10 @@ def _freshness_gate(
     as_of: date,
     strict_rebalance_pretrade: bool,
 ) -> dict[str, Any]:
-    required = {"prices_daily_v1", "delivery_daily_v1"}
-    if bool(strict_rebalance_pretrade):
+    core_required = {"prices_daily_v1", "delivery_daily_v1"}
+    bulk_required = bool(strict_rebalance_pretrade)
+    required = set(core_required)
+    if bulk_required:
         required.add("bulk_block_deals")
     with duckdb.connect(str(db_path), read_only=True) as conn:
         h = compute_pipeline_health(
@@ -106,14 +108,36 @@ def _freshness_gate(
         )
     z = h[h["pipeline"].isin(sorted(required))].copy()
     z["status"] = z["status"].astype(str).str.upper()
-    fail = z[z["status"] != "WORKING"].copy()
+    core = z[z["pipeline"].isin(sorted(core_required))].copy()
+    core_fail = core[core["status"] != "WORKING"].copy()
+
+    bulk_warn: list[dict[str, Any]] = []
+    bulk_fail = pd.DataFrame(columns=z.columns)
+    if bulk_required:
+        bulk = z[z["pipeline"] == "bulk_block_deals"].copy()
+        # Bulk feed can naturally be sparse on some periods. Treat STALE as warning,
+        # but keep BROKEN as blocking for institutional visibility.
+        if not bulk.empty:
+            bulk_warn = bulk[bulk["status"] == "STALE"][
+                ["pipeline", "status", "last_date", "lag_days", "message"]
+            ].to_dict(orient="records")
+            bulk_fail = bulk[bulk["status"].isin(["BROKEN", "ERROR"])].copy()
+        else:
+            bulk_fail = pd.DataFrame(
+                [{"pipeline": "bulk_block_deals", "status": "BROKEN", "last_date": None, "lag_days": None, "message": "table_missing"}]
+            )
+
+    fail = pd.concat([core_fail, bulk_fail], ignore_index=True) if (not core_fail.empty or not bulk_fail.empty) else pd.DataFrame(columns=z.columns)
     return {
         "as_of_date": as_of.isoformat(),
         "required_pipelines": sorted(required),
+        "core_required_pipelines": sorted(core_required),
+        "strict_bulk_enabled": bulk_required,
         "passed": bool(fail.empty),
         "failing": fail[
             ["pipeline", "status", "last_date", "lag_days", "message"]
         ].to_dict(orient="records"),
+        "warnings": bulk_warn,
     }
 
 
@@ -290,6 +314,8 @@ def main(argv=None):
     print("decision_as_of_date:", decision_as_of)
     print("repair_as_of_date:", repair_as_of)
     print("required_freshness_gate_passed:", bool(repair_gate.get("passed")))
+    if repair_gate.get("warnings"):
+        print("required_freshness_gate_warnings:", json.dumps(repair_gate.get("warnings"), ensure_ascii=True, default=str))
     print("status:", payload["status"])
     print("decision_mode:", decision_mode)
     if not overall_ok:
