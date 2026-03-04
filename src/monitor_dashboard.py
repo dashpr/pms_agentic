@@ -885,9 +885,12 @@ def main() -> None:
     bt_runs = bundle["bt_runs"].copy()
     bt_runs["run_ts"] = _to_dt_ns(bt_runs["run_ts"])
     latest_bt_cagr = 0.0
+    latest_bt_end_date = None
     if not bt_runs.empty:
-        stz = _safe_json_load(bt_runs.sort_values("run_ts", ascending=False).iloc[0]["stats_json"])
+        latest_bt_row = bt_runs.sort_values("run_ts", ascending=False).iloc[0]
+        stz = _safe_json_load(latest_bt_row["stats_json"])
         latest_bt_cagr = float(stz.get("CAGR", 0.0))
+        latest_bt_end_date = pd.to_datetime(latest_bt_row.get("end_date"), errors="coerce")
 
     quotes_db = bundle["quotes_db"].copy()
     quotes_db["symbol"] = quotes_db["symbol"].astype(str).str.upper()
@@ -916,8 +919,11 @@ def main() -> None:
     c2.metric("Model As Of", str(latest_as_of))
     c3.metric("Regime", str(regime.get("label", "unknown")).upper())
     c4.metric("Portfolio", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
-    c5.metric("Portfolio CAGR", f"{latest_bt_cagr:.2%}")
+    c5.metric("Latest Backtest CAGR", f"{latest_bt_cagr:.2%}")
     c6.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
+    if latest_bt_end_date is not None and pd.notna(latest_bt_end_date):
+        bt_lag_days = int((pd.Timestamp.now(tz="UTC").date() - latest_bt_end_date.date()).days)
+        st.caption(f"Backtest metric as-of {latest_bt_end_date.date()} (lag {bt_lag_days} days).")
 
     st.subheader("Data Provenance")
     p1, p2, p3, p4 = st.columns(4)
