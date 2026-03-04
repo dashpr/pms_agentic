@@ -615,6 +615,196 @@ def _fetch_live_quotes(symbols: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=300)
+def _compute_live_assumed_performance(
+    db_path: str,
+    initial_capital_inr: float = 1_000_000.0,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "ok": False,
+        "initial_capital": float(initial_capital_inr),
+        "start_date": None,
+        "end_date": None,
+        "live_days": 0,
+        "rebalance_count": 0,
+        "equity_end": None,
+        "gain_abs": None,
+        "gain_pct": None,
+        "cagr": None,
+        "reason": "",
+    }
+    try:
+        with duckdb.connect(db_path, read_only=True) as conn:
+            runs = conn.execute(
+                """
+                SELECT run_id, CAST(as_of_date AS DATE) AS as_of_date, run_ts
+                FROM agentic_runs_v1
+                WHERE UPPER(COALESCE(status, ''))='OK'
+                ORDER BY run_ts ASC
+                """
+            ).df()
+            if runs.empty:
+                out["reason"] = "No successful decision runs found."
+                return out
+            runs["as_of_date"] = _to_dt_ns(runs["as_of_date"])
+            runs["run_ts"] = _to_dt_ns(runs["run_ts"])
+            rebalance_runs = (
+                runs.sort_values(["as_of_date", "run_ts"])
+                .drop_duplicates(subset=["as_of_date"], keep="last")
+                .sort_values("as_of_date")
+                .copy()
+            )
+            if rebalance_runs.empty:
+                out["reason"] = "No distinct rebalance dates found."
+                return out
+
+            run_ids = rebalance_runs["run_id"].astype(str).tolist()
+            placeholders = ",".join(["?"] * len(run_ids))
+            pf = conn.execute(
+                f"""
+                SELECT
+                    run_id,
+                    UPPER(TRIM(symbol)) AS symbol,
+                    CAST(target_weight AS DOUBLE) AS target_weight
+                FROM agentic_portfolio_targets_v1
+                WHERE run_id IN ({placeholders})
+                """,
+                run_ids,
+            ).df()
+            if pf.empty:
+                out["reason"] = "No portfolio targets found for rebalance runs."
+                return out
+            pf["symbol"] = pf["symbol"].astype(str).str.upper()
+            pf["target_weight"] = pd.to_numeric(pf["target_weight"], errors="coerce").fillna(0.0)
+            pf = pf[pf["target_weight"] > 0].copy()
+            if pf.empty:
+                out["reason"] = "All target weights are zero."
+                return out
+
+            last_px_date = conn.execute("SELECT MAX(CAST(date AS DATE)) FROM prices_daily_v1").fetchone()[0]
+            if last_px_date is None:
+                out["reason"] = "No prices available."
+                return out
+            last_px_date = pd.to_datetime(last_px_date).date()
+
+            symbols = sorted(pf["symbol"].dropna().unique().tolist())
+            start_probe = (pd.to_datetime(rebalance_runs["as_of_date"].min()).date() - timedelta(days=10)).isoformat()
+            sym_df = pd.DataFrame({"symbol": symbols})
+            conn.register("sym_df", sym_df)
+            px = conn.execute(
+                """
+                SELECT
+                    CAST(p.date AS DATE) AS date,
+                    UPPER(TRIM(p.canonical_symbol)) AS symbol,
+                    CAST(p.close AS DOUBLE) AS close
+                FROM prices_daily_v1 p
+                INNER JOIN sym_df s
+                  ON UPPER(TRIM(p.canonical_symbol)) = s.symbol
+                WHERE CAST(p.date AS DATE) BETWEEN ? AND ?
+                ORDER BY 1, 2
+                """,
+                [start_probe, str(last_px_date)],
+            ).df()
+            conn.unregister("sym_df")
+    except Exception as e:
+        out["reason"] = str(e)
+        return out
+
+    if px.empty:
+        out["reason"] = "No price history found for portfolio symbols."
+        return out
+
+    px["date"] = _to_dt_ns(px["date"])
+    px["close"] = pd.to_numeric(px["close"], errors="coerce")
+    px = px.dropna(subset=["date", "symbol", "close"]).copy()
+    if px.empty:
+        out["reason"] = "Price history became empty after cleaning."
+        return out
+
+    px_w = px.pivot(index="date", columns="symbol", values="close").sort_index()
+    if px_w.empty or len(px_w.index) < 2:
+        out["reason"] = "Insufficient price rows to compute live returns."
+        return out
+    rets = px_w.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    trade_dates = pd.Index(rets.index)
+
+    # Map each rebalance as_of_date to the first trading date on/after it.
+    mapped_rebalances: list[tuple[pd.Timestamp, str, pd.Timestamp]] = []
+    for rr in rebalance_runs.itertuples(index=False):
+        asof = pd.Timestamp(rr.as_of_date)
+        cand = trade_dates[trade_dates >= asof]
+        if len(cand) == 0:
+            continue
+        mapped_rebalances.append((asof, str(rr.run_id), pd.Timestamp(cand[0])))
+    if not mapped_rebalances:
+        out["reason"] = "No rebalance date overlaps available price dates."
+        return out
+
+    weights_by_run: dict[str, dict[str, float]] = {}
+    for rid, g in pf.groupby("run_id"):
+        w = g[["symbol", "target_weight"]].copy()
+        w["target_weight"] = pd.to_numeric(w["target_weight"], errors="coerce").fillna(0.0)
+        w = w[w["target_weight"] > 0].copy()
+        if w.empty:
+            continue
+        total_w = float(w["target_weight"].sum())
+        if total_w > 1.0 + 1e-9:
+            w["target_weight"] = w["target_weight"] / total_w
+            total_w = 1.0
+        weights_by_run[str(rid)] = {
+            str(r.symbol): float(r.target_weight) for r in w.itertuples(index=False)
+        }
+
+    events: dict[pd.Timestamp, str] = {}
+    for _, rid, td in mapped_rebalances:
+        events[pd.Timestamp(td)] = str(rid)
+    sim_dates = trade_dates[trade_dates >= min(events.keys())]
+    if len(sim_dates) == 0:
+        out["reason"] = "No simulation dates found."
+        return out
+
+    equity = float(initial_capital_inr)
+    current_w: dict[str, float] = {}
+    for d in sim_dates:
+        dts = pd.Timestamp(d)
+        if dts in events:
+            current_w = weights_by_run.get(str(events[dts]), {})
+        row = rets.loc[dts] if dts in rets.index else pd.Series(dtype=float)
+        port_ret = 0.0
+        for sym, w in current_w.items():
+            rv = row.get(sym, np.nan)
+            if pd.notna(rv):
+                port_ret += float(w) * float(rv)
+        equity *= (1.0 + float(port_ret))
+
+    start_date = pd.Timestamp(sim_dates.min()).date()
+    end_date = pd.Timestamp(sim_dates.max()).date()
+    days = max(int((end_date - start_date).days), 1)
+    gain_abs = float(equity - float(initial_capital_inr))
+    gain_pct = float((equity / float(initial_capital_inr)) - 1.0) if initial_capital_inr > 0 else np.nan
+    cagr = (
+        float((equity / float(initial_capital_inr)) ** (365.25 / float(days)) - 1.0)
+        if (initial_capital_inr > 0 and days >= 30)
+        else np.nan
+    )
+
+    out.update(
+        {
+            "ok": True,
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "live_days": int(days),
+            "rebalance_count": int(len(events)),
+            "equity_end": float(equity),
+            "gain_abs": gain_abs,
+            "gain_pct": gain_pct,
+            "cagr": cagr,
+            "reason": "",
+        }
+    )
+    return out
+
+
 def _build_signal_reason(
     symbol: str,
     signal: str,
@@ -885,32 +1075,10 @@ def main() -> None:
     bt_runs = bundle["bt_runs"].copy()
     bt_equity = bundle["bt_equity"].copy()
     bt_runs["run_ts"] = _to_dt_ns(bt_runs["run_ts"])
-    latest_bt_total_return = np.nan
-    latest_bt_cagr = np.nan
-    latest_bt_run_id = ""
-    latest_bt_start_date = None
-    latest_bt_end_date = None
-    if not bt_runs.empty:
-        latest_bt_row = bt_runs.sort_values("run_ts", ascending=False).iloc[0]
-        latest_bt_run_id = str(latest_bt_row.get("run_id", ""))
-        stz = _safe_json_load(latest_bt_row["stats_json"])
-        latest_bt_total_return = pd.to_numeric(stz.get("Total Return"), errors="coerce")
-        latest_bt_cagr = pd.to_numeric(stz.get("CAGR"), errors="coerce")
-        latest_bt_start_date = pd.to_datetime(latest_bt_row.get("start_date"), errors="coerce")
-        latest_bt_end_date = pd.to_datetime(latest_bt_row.get("end_date"), errors="coerce")
-        if (pd.isna(latest_bt_total_return) or pd.isna(latest_bt_cagr)) and (not bt_equity.empty) and latest_bt_run_id:
-            eq = bt_equity[bt_equity["run_id"].astype(str) == latest_bt_run_id].copy()
-            if not eq.empty:
-                eq["date"] = _to_dt_ns(eq["date"])
-                eq["equity"] = pd.to_numeric(eq["equity"], errors="coerce")
-                eq = eq.dropna(subset=["date", "equity"]).sort_values("date")
-                if len(eq) >= 2:
-                    first_eq = float(eq.iloc[0]["equity"])
-                    last_eq = float(eq.iloc[-1]["equity"])
-                    if first_eq > 0:
-                        latest_bt_total_return = (last_eq / first_eq) - 1.0
-                        yrs = max((eq.iloc[-1]["date"] - eq.iloc[0]["date"]).days / 365.25, 1.0 / 365.25)
-                        latest_bt_cagr = (last_eq / first_eq) ** (1.0 / yrs) - 1.0
+    live_perf = _compute_live_assumed_performance(
+        db_path=db_path,
+        initial_capital_inr=1_000_000.0,
+    )
 
     quotes_db = bundle["quotes_db"].copy()
     quotes_db["symbol"] = quotes_db["symbol"].astype(str).str.upper()
@@ -940,22 +1108,31 @@ def main() -> None:
     c3.metric("Regime", str(regime.get("label", "unknown")).upper())
     c4.metric("Portfolio", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
     c5.metric(
-        "Assumed Portfolio Gain",
-        "-" if pd.isna(latest_bt_total_return) else f"{float(latest_bt_total_return):.2%}",
+        "Live Gain (₹10L Base)",
+        "-" if (not live_perf.get("ok")) else f"₹{float(live_perf.get('gain_abs', 0.0)):,.0f}",
     )
     c6.metric(
-        "Assumed CAGR",
-        "-" if pd.isna(latest_bt_cagr) else f"{float(latest_bt_cagr):.2%}",
+        "Live CAGR (Assumed Exec)",
+        "-" if ((not live_perf.get("ok")) or pd.isna(pd.to_numeric(live_perf.get("cagr"), errors="coerce"))) else f"{float(live_perf.get('cagr', 0.0)):.2%}",
     )
     c7.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
-    if latest_bt_run_id:
-        sd = str(latest_bt_start_date.date()) if latest_bt_start_date is not None and pd.notna(latest_bt_start_date) else "-"
-        ed = str(latest_bt_end_date.date()) if latest_bt_end_date is not None and pd.notna(latest_bt_end_date) else "-"
-        cap = f"Assumed execution metrics from backtest run {latest_bt_run_id[:14]} | window {sd} to {ed}."
-        if latest_bt_end_date is not None and pd.notna(latest_bt_end_date):
-            bt_lag_days = int((pd.Timestamp.now(tz="UTC").date() - latest_bt_end_date.date()).days)
-            cap = cap + f" Metric lag: {bt_lag_days} day(s)."
-        st.caption(cap)
+    if live_perf.get("ok"):
+        cagr_note = (
+            " | CAGR pending (requires >=30 live days)."
+            if pd.isna(pd.to_numeric(live_perf.get("cagr"), errors="coerce"))
+            else ""
+        )
+        st.caption(
+            "Live metrics assume all rebalance recommendations were executed as generated. "
+            f"Window: {live_perf.get('start_date')} to {live_perf.get('end_date')} | "
+            f"Live days: {int(live_perf.get('live_days', 0))} | "
+            f"Rebalances executed: {int(live_perf.get('rebalance_count', 0))} | "
+            f"Current value: ₹{float(live_perf.get('equity_end', 0.0)):,.0f} "
+            f"({float(live_perf.get('gain_pct', 0.0)):.2%})."
+            f"{cagr_note}"
+        )
+    else:
+        st.caption(f"Live gain/CAGR unavailable: {str(live_perf.get('reason', 'insufficient data'))}")
 
     st.subheader("Data Provenance")
     p1, p2, p3, p4 = st.columns(4)
