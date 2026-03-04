@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,38 @@ REMOTE_DB_LOCAL_PATH = Path("/tmp/ownership_runtime.duckdb")
 REMOTE_DB_META_PATH = Path("/tmp/ownership_runtime_meta.json")
 
 
+def _inject_ui_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 1500px;
+            padding-top: 1.1rem;
+            padding-left: 1.4rem;
+            padding-right: 1.4rem;
+        }
+        div[data-testid="stMetric"] {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #f8fafc;
+            padding: 0.55rem 0.75rem;
+        }
+        div[data-testid="stMetricLabel"] {
+            white-space: normal;
+            font-size: 0.82rem;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 1.7rem;
+        }
+        div[data-testid="stDataFrame"] {
+            font-size: 0.92rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _safe_json_load(x: Any) -> dict[str, Any]:
     if isinstance(x, dict):
         return x
@@ -53,6 +85,15 @@ def _safe_json_load(x: Any) -> dict[str, Any]:
         return json.loads(str(x))
     except Exception:
         return {}
+
+
+def _fmt_date_only(x: Any) -> str:
+    if x is None:
+        return "-"
+    d = pd.to_datetime(x, errors="coerce")
+    if pd.notna(d):
+        return str(d.date())
+    return str(x)
 
 
 def _ensure_remote_db_snapshot(url: str, refresh_minutes: int = 60) -> str:
@@ -335,6 +376,11 @@ def _style_signal_and_change(
             axis=1,
         )
         sty = sty.format({"fusion_score_display": lambda v: str(v)})
+    pct_cols = [c for c in df.columns if str(c).lower().endswith("_pct")]
+    if pct_cols:
+        sty = sty.format({c: (lambda v: f"{float(v):.2f}%" if pd.notna(v) else "-") for c in pct_cols})
+    if "last_price" in df.columns:
+        sty = sty.format({"last_price": lambda v: f"{float(v):.2f}" if pd.notna(v) else "-"})
     return sty
 
 
@@ -962,6 +1008,7 @@ def _next_weekday(d: pd.Timestamp, weekday: int) -> pd.Timestamp:
 
 
 def main() -> None:
+    _inject_ui_css()
     st.title("AI Agent Stable Stocks")
     st.caption(f"Model: {MODEL_ID} | Version: {MODEL_VERSION}")
 
@@ -1102,20 +1149,21 @@ def main() -> None:
         latency_days = int((now_naive.normalize() - px_naive.normalize()).days)
 
     st.subheader("Live Snapshot")
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Snapshot Time", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
-    c2.metric("Model As Of", str(latest_as_of))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Snapshot Date", _fmt_date_only(pd.Timestamp.utcnow()))
+    c2.metric("Model Date", _fmt_date_only(latest_as_of))
     c3.metric("Regime", str(regime.get("label", "unknown")).upper())
-    c4.metric("Portfolio", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
+    c4.metric("Positions", f"{int(summary.get('portfolio_size', len(portfolio_latest)))}")
+    c5, c6, c7 = st.columns(3)
     c5.metric(
-        "Live Gain (₹10L Base)",
+        "Live Gain (₹)",
         "-" if (not live_perf.get("ok")) else f"₹{float(live_perf.get('gain_abs', 0.0)):,.0f}",
     )
     c6.metric(
-        "Live CAGR (Assumed Exec)",
+        "Live CAGR",
         "-" if ((not live_perf.get("ok")) or pd.isna(pd.to_numeric(live_perf.get("cagr"), errors="coerce"))) else f"{float(live_perf.get('cagr', 0.0)):.2%}",
     )
-    c7.metric("Data Latency (days)", "-" if latency_days is None else str(int(latency_days)))
+    c7.metric("Latency (d)", "-" if latency_days is None else str(int(latency_days)))
     if live_perf.get("ok"):
         cagr_note = (
             " | CAGR pending (requires >=30 live days)."
@@ -1138,12 +1186,12 @@ def main() -> None:
     p1, p2, p3, p4 = st.columns(4)
     p1.metric("DB Source", Path(db_path).name)
     p2.metric(
-        "Runtime Published (UTC)",
-        str(remote_runtime_meta.get("published_at_utc", "-")),
+        "Runtime Published",
+        _fmt_date_only(remote_runtime_meta.get("published_at_utc", "-")),
     )
     p3.metric(
-        "Snapshot Downloaded (UTC)",
-        str(local_runtime_meta.get("downloaded_at_utc", "-")),
+        "Snapshot Downloaded",
+        _fmt_date_only(local_runtime_meta.get("downloaded_at_utc", "-")),
     )
     p4.metric(
         "Latest Decision Run",
@@ -1151,11 +1199,11 @@ def main() -> None:
     )
     prov_rows = [
         {"key": "latest_run_status", "value": provenance.get("latest_run_status")},
-        {"key": "latest_run_asof", "value": str(provenance.get("latest_run_asof"))},
-        {"key": "latest_run_ts", "value": str(provenance.get("latest_run_ts"))},
-        {"key": "prices_daily_v1.max_date", "value": str(provenance.get("prices_max_date"))},
-        {"key": "delivery_daily_v1.max_date", "value": str(provenance.get("delivery_max_date"))},
-        {"key": "bulk_block_deals.max_date", "value": str(provenance.get("bulk_max_date"))},
+        {"key": "latest_run_asof", "value": _fmt_date_only(provenance.get("latest_run_asof"))},
+        {"key": "latest_run_ts", "value": _fmt_date_only(provenance.get("latest_run_ts"))},
+        {"key": "prices_daily_v1.max_date", "value": _fmt_date_only(provenance.get("prices_max_date"))},
+        {"key": "delivery_daily_v1.max_date", "value": _fmt_date_only(provenance.get("delivery_max_date"))},
+        {"key": "bulk_block_deals.max_date", "value": _fmt_date_only(provenance.get("bulk_max_date"))},
         {"key": "agentic_runs_v1.count", "value": int(provenance.get("agentic_run_count", 0))},
         {"key": "agentic_consensus_v1.rows", "value": int(provenance.get("consensus_total_rows", 0))},
         {"key": "runtime_meta.source_sha", "value": str(remote_runtime_meta.get("source_sha", "-"))},
@@ -1261,9 +1309,15 @@ def main() -> None:
 
     rr1, rr2 = st.columns(2)
     rr1.markdown("**New Buys (vs previous rebalance run)**")
-    rr1.dataframe(pd.DataFrame(buy_rows), hide_index=True, use_container_width=True)
+    buy_df = pd.DataFrame(buy_rows)
+    if not buy_df.empty and "target_weight_pct" in buy_df.columns:
+        buy_df["target_weight_pct"] = buy_df["target_weight_pct"].map(lambda v: f"{float(v):.2f}%")
+    rr1.dataframe(buy_df, hide_index=True, use_container_width=True)
     rr2.markdown("**Exits (vs previous rebalance run)**")
-    rr2.dataframe(pd.DataFrame(exit_rows), hide_index=True, use_container_width=True)
+    exit_df = pd.DataFrame(exit_rows)
+    if not exit_df.empty and "prev_weight_pct" in exit_df.columns:
+        exit_df["prev_weight_pct"] = exit_df["prev_weight_pct"].map(lambda v: f"{float(v):.2f}%")
+    rr2.dataframe(exit_df, hide_index=True, use_container_width=True)
     if not buy_rows and not exit_rows:
         st.info("No symbol-level entries/exits vs previous rebalance snapshot.")
 
@@ -1284,8 +1338,8 @@ def main() -> None:
                 prev_syms_i = set(pf_prev_i["symbol"].astype(str).str.upper().tolist()) if not pf_prev_i.empty else set()
             rb_hist_rows.append(
                 {
-                    "run_ts": str(rts),
-                    "as_of_date": str(asof),
+                    "run_date": _fmt_date_only(rts),
+                    "as_of_date": _fmt_date_only(asof),
                     "run_id": rid[:16],
                     "positions": int(len(cur_syms_i)),
                     "new_buys": int(len(cur_syms_i - prev_syms_i)),
@@ -1330,6 +1384,9 @@ def main() -> None:
     if orders_df.empty:
         st.info("No rebalance orders generated (weights unchanged vs previous rebalance snapshot).")
     else:
+        for c in ["prev_weight_pct", "target_weight_pct", "delta_weight_pct"]:
+            if c in orders_df.columns:
+                orders_df[c] = orders_df[c].map(lambda v: f"{float(v):.2f}%")
         st.dataframe(orders_df, hide_index=True, use_container_width=True)
         cdl1, cdl2 = st.columns(2)
         csv_bytes = orders_df.to_csv(index=False).encode("utf-8")
@@ -1537,8 +1594,13 @@ def main() -> None:
         bt_runs["CAGR"] = bt_runs["stats"].map(lambda x: float(x.get("CAGR", 0.0)))
         bt_runs["Trade Win Rate"] = bt_runs["stats"].map(lambda x: float(x.get("Trade Win Rate", 0.0)))
         bt_runs["Max Drawdown"] = bt_runs["stats"].map(lambda x: float(x.get("Max Drawdown", 0.0)))
+        bt_view = bt_runs[["run_id", "run_ts", "start_date", "end_date", "CAGR", "Trade Win Rate", "Max Drawdown"]].copy()
+        for c in ["run_ts", "start_date", "end_date"]:
+            bt_view[c] = bt_view[c].map(_fmt_date_only)
+        for c in ["CAGR", "Trade Win Rate", "Max Drawdown"]:
+            bt_view[c] = pd.to_numeric(bt_view[c], errors="coerce").map(lambda v: f"{float(v):.2%}" if pd.notna(v) else "-")
         st.dataframe(
-            bt_runs[["run_id", "run_ts", "start_date", "end_date", "CAGR", "Trade Win Rate", "Max Drawdown"]],
+            bt_view,
             hide_index=True,
             use_container_width=True,
         )
@@ -1772,12 +1834,15 @@ def main() -> None:
                 "notes",
             ]
         ].copy()
-        hv["last_date"] = _to_dt_ns(hv["last_date"]).dt.date
+        hv["as_of_ref_date"] = hv["as_of_ref_date"].map(_fmt_date_only)
+        hv["last_date"] = hv["last_date"].map(_fmt_date_only)
         hv = hv.rename(
             columns={
                 "lag_days": "market_lag_days",
             }
         )
+        hv["market_lag_days"] = pd.to_numeric(hv["market_lag_days"], errors="coerce").round(0).astype("Int64")
+        hv["calendar_lag_days"] = pd.to_numeric(hv["calendar_lag_days"], errors="coerce").round(0).astype("Int64")
         hsty = hv.style.apply(
             lambda s: [_status_color(v) if s.name == "status" else "" for v in s],
             subset=["status"],
