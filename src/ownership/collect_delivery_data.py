@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ RAW_DIR = Path("data_raw/nse_delivery")
 NSE_DELIVERY_URLS = [
     "https://archives.nseindia.com/archives/equities/mto/MTO_{date}.DAT",
     "https://nsearchives.nseindia.com/archives/equities/mto/MTO_{date}.DAT",
+]
+NSE_SEC_BHAV_URLS = [
+    "https://archives.nseindia.com/products/content/sec_bhavdata_full_{date}.csv",
+    "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date}.csv",
 ]
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -33,10 +38,53 @@ def _build_session() -> requests.Session:
     return s
 
 
+def _parse_sec_bhav_csv(text_data: str, file_date: date) -> pd.DataFrame:
+    try:
+        z = pd.read_csv(io.StringIO(text_data))
+    except Exception:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+    if z.empty:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+
+    z.columns = [str(c).strip().upper() for c in z.columns]
+    for need in ["SYMBOL", "SERIES"]:
+        if need not in z.columns:
+            return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+    z["SYMBOL"] = z["SYMBOL"].astype(str).str.strip().str.upper()
+    z["SERIES"] = z["SERIES"].astype(str).str.strip().str.upper()
+    z = z[z["SERIES"].eq("EQ")].copy()
+    if z.empty:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+
+    # NSE sec_bhavdata_full usually contains DELIV_PER and TTL_TRD_QNTY columns.
+    vol_col = "TTL_TRD_QNTY" if "TTL_TRD_QNTY" in z.columns else ("TOTTRDQTY" if "TOTTRDQTY" in z.columns else None)
+    deliv_pct_col = "DELIV_PER" if "DELIV_PER" in z.columns else None
+    deliv_qty_col = "DELIV_QTY" if "DELIV_QTY" in z.columns else None
+    close_col = "CLOSE_PRICE" if "CLOSE_PRICE" in z.columns else ("CLOSE" if "CLOSE" in z.columns else None)
+
+    if vol_col is None:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+
+    z["volume"] = pd.to_numeric(z.get(vol_col), errors="coerce")
+    if deliv_pct_col is not None:
+        z["delivery_pct"] = pd.to_numeric(z.get(deliv_pct_col), errors="coerce")
+    elif deliv_qty_col is not None:
+        dq = pd.to_numeric(z.get(deliv_qty_col), errors="coerce")
+        z["delivery_pct"] = (dq / z["volume"]) * 100.0
+    else:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+    z["price"] = pd.to_numeric(z.get(close_col), errors="coerce") if close_col is not None else 0.0
+    z["date"] = pd.to_datetime(file_date).date()
+    z = z.dropna(subset=["SYMBOL", "delivery_pct", "volume"]).copy()
+    if z.empty:
+        return pd.DataFrame(columns=["symbol", "date", "delivery_pct", "volume", "price"])
+    return z.rename(columns={"SYMBOL": "symbol"})[["symbol", "date", "delivery_pct", "volume", "price"]]
+
+
 def fetch_latest_delivery_file(
     max_lookback: int = 21,
     prefer_cache: bool = True,
-) -> tuple[str, date, str]:
+) -> tuple[pd.DataFrame, date, str]:
     session = _build_session()
     today = datetime.utcnow().date()
 
@@ -45,10 +93,20 @@ def fetch_latest_delivery_file(
         ymd = check_date.strftime("%Y-%m-%d")
         ddmmyyyy = check_date.strftime("%d%m%Y")
         cache_path = RAW_DIR / f"{ymd}.DAT"
+        sec_cache_path = RAW_DIR / f"{ymd}_sec_bhav.csv"
 
         if prefer_cache and cache_path.exists() and cache_path.stat().st_size > 100:
             print(f"Using cached delivery file: {cache_path}")
-            return cache_path.read_text(encoding="latin1", errors="ignore"), check_date, str(cache_path)
+            txt = cache_path.read_text(encoding="latin1", errors="ignore")
+            df = transform_delivery_df(txt, check_date)
+            if not df.empty:
+                return df, check_date, str(cache_path)
+        if prefer_cache and sec_cache_path.exists() and sec_cache_path.stat().st_size > 100:
+            print(f"Using cached sec_bhav file: {sec_cache_path}")
+            txt = sec_cache_path.read_text(encoding="utf-8", errors="ignore")
+            df = _parse_sec_bhav_csv(txt, check_date)
+            if not df.empty:
+                return df, check_date, str(sec_cache_path)
 
         for tmpl in NSE_DELIVERY_URLS:
             url = tmpl.format(date=ddmmyyyy)
@@ -63,7 +121,30 @@ def fetch_latest_delivery_file(
                 RAW_DIR.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(txt, encoding="latin1")
                 print(f"Found delivery file for: {ymd}")
-                return txt, check_date, url
+                df = transform_delivery_df(txt, check_date)
+                if not df.empty:
+                    return df, check_date, url
+            except requests.RequestException:
+                continue
+
+        # Fallback: NSE daily sec_bhavdata_full csv
+        for tmpl in NSE_SEC_BHAV_URLS:
+            url = tmpl.format(date=ddmmyyyy)
+            print("Trying:", url)
+            try:
+                r = session.get(url, timeout=20)
+                if r.status_code != 200:
+                    continue
+                txt = r.content.decode("utf-8", errors="ignore")
+                if len(txt) < 100:
+                    continue
+                df = _parse_sec_bhav_csv(txt, check_date)
+                if df.empty:
+                    continue
+                RAW_DIR.mkdir(parents=True, exist_ok=True)
+                sec_cache_path.write_text(txt, encoding="utf-8")
+                print(f"Found sec_bhav delivery proxy for: {ymd}")
+                return df, check_date, url
             except requests.RequestException:
                 continue
 
@@ -170,12 +251,11 @@ def run_delivery_update(
     print("\n===== DELIVERY UPDATE START =====\n")
     out: dict[str, Any] = {"ok": False, "date": None, "rows": 0, "inserted": 0, "source": ""}
     try:
-        text_data, file_date, source = fetch_latest_delivery_file(
+        df_clean, file_date, source = fetch_latest_delivery_file(
             max_lookback=int(max_lookback),
             prefer_cache=bool(prefer_cache),
         )
         print("Using trading date:", file_date)
-        df_clean = transform_delivery_df(text_data, file_date)
         inserted = insert_into_duckdb(df_clean)
         print("Parsed delivery rows:", len(df_clean))
         print("Inserted new rows:", inserted)

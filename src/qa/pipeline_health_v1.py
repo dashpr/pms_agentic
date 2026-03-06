@@ -152,8 +152,9 @@ def compute_pipeline_health(
             date_col="date",
             symbol_col="symbol",
             required=True,
-            lag_warn_days=7,
-            lag_fail_days=21,
+            # Event-driven feed can naturally have sparse dates.
+            lag_warn_days=14,
+            lag_fail_days=45,
             min_rows=1,
             min_symbols=1,
             notes="Ownership block/bulk flow feed",
