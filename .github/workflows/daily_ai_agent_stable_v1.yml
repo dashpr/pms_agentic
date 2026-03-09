@@ -3,8 +3,10 @@ name: Daily AI Agent Stable Stocks v1
 on:
   workflow_dispatch:
   schedule:
-    # 19:15 IST, Monday-Friday
-    - cron: "45 13 * * 1-5"
+    # 19:15 IST daily run (data refresh + decision cycle)
+    - cron: "45 13 * * *"
+    # 22:15 IST second pass to catch delayed exchange/publication windows
+    - cron: "45 16 * * *"
 
 permissions:
   contents: write

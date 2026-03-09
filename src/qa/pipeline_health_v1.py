@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 
@@ -89,11 +90,22 @@ def _eval_rule(
         out["message"] = "no_last_date"
         return out
 
-    lag_days = int((pd.Timestamp(as_of_date) - pd.Timestamp(last_date)).days)
-    # If data is newer than the requested as_of_date (e.g., forward-filled cache),
-    # treat lag as zero for freshness-gate purposes.
+    cal_lag_days = int((pd.Timestamp(as_of_date) - pd.Timestamp(last_date)).days)
+    # Use business-day lag for freshness gating to avoid false weekend penalties.
+    # np.busday_count excludes the end date; this maps Fri->Mon as 1 market day.
+    try:
+        lag_days = int(
+            np.busday_count(
+                pd.Timestamp(last_date).date(),
+                pd.Timestamp(as_of_date).date(),
+            )
+        )
+    except Exception:
+        lag_days = int(cal_lag_days)
+    # If data is newer than requested as_of (cache/clock skew), clamp to zero.
     lag_days = max(lag_days, 0)
     out["lag_days"] = lag_days
+    out["calendar_lag_days"] = max(int(cal_lag_days), 0)
     if lag_days > int(rule.lag_fail_days):
         out["status"] = "BROKEN"
         out["message"] = f"stale_{lag_days}d"
@@ -128,8 +140,8 @@ def compute_pipeline_health(
             date_col="date",
             symbol_col="canonical_symbol",
             required=True,
-            lag_warn_days=2,
-            lag_fail_days=5,
+            lag_warn_days=1,
+            lag_fail_days=2,
             min_rows=100000,
             min_symbols=200,
             notes="Core market data feed",
@@ -140,8 +152,8 @@ def compute_pipeline_health(
             date_col="date",
             symbol_col="canonical_symbol",
             required=True,
-            lag_warn_days=3,
-            lag_fail_days=8,
+            lag_warn_days=1,
+            lag_fail_days=3,
             min_rows=100000,
             min_symbols=180,
             notes="Ownership delivery feed",

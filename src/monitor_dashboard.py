@@ -1729,6 +1729,27 @@ def main() -> None:
     has_scheduled_report = Path("data/reports/scheduled_daily_cycle_v1_latest.json").exists()
     remote_scheduled_report = _fetch_remote_report_json(remote_db_url, "scheduled_daily_cycle_v1_latest.json") if remote_db_url else {}
     has_remote_scheduled_report = bool(remote_scheduled_report)
+    local_incremental_payload = (
+        _safe_json_load(Path("data/reports/incremental_cycle_latest.json").read_text(encoding="utf-8"))
+        if has_incremental_report
+        else {}
+    )
+    local_scheduled_payload = (
+        _safe_json_load(Path("data/reports/scheduled_daily_cycle_v1_latest.json").read_text(encoding="utf-8"))
+        if has_scheduled_report
+        else {}
+    )
+    cycle_payload_for_ops = (
+        local_incremental_payload
+        if local_incremental_payload
+        else (local_scheduled_payload if local_scheduled_payload else (remote_scheduled_report if has_remote_scheduled_report else {}))
+    )
+    cycle_status_for_ops = str(cycle_payload_for_ops.get("status", "")).upper() if isinstance(cycle_payload_for_ops, dict) else ""
+    daily_automation_status = (
+        "OK"
+        if cycle_status_for_ops == "OK"
+        else ("BROKEN" if cycle_status_for_ops else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN"))
+    )
 
     ops_rows = [
         {
@@ -1775,11 +1796,7 @@ def main() -> None:
         },
         {
             "item": "Daily automation report",
-            "status": (
-                "OK"
-                if (has_incremental_report or has_scheduled_report or has_remote_scheduled_report)
-                else ("OPTIONAL_OFF" if runtime_snapshot_mode else "BROKEN")
-            ),
+            "status": daily_automation_status,
             "action": "Run daily automation cycle.",
             "how_to_fix": (
                 "Cloud app reads runtime snapshot; automation report is tracked in GitHub Actions artifacts."
