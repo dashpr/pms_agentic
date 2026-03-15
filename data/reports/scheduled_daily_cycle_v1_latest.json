@@ -1,0 +1,71 @@
+{
+  "as_of_date": "2026-03-13",
+  "as_of_date_initial": "2026-03-13",
+  "repair_as_of_date": "2026-03-15",
+  "status": "OK",
+  "decision_mode": "STRICT",
+  "required_freshness_gate": {
+    "as_of_date": "2026-03-15",
+    "required_pipelines": [
+      "bulk_block_deals",
+      "delivery_daily_v1",
+      "prices_daily_v1"
+    ],
+    "core_required_pipelines": [
+      "delivery_daily_v1",
+      "prices_daily_v1"
+    ],
+    "strict_bulk_enabled": true,
+    "passed": true,
+    "failing": [],
+    "warnings": [
+      {
+        "pipeline": "bulk_block_deals",
+        "status": "STALE",
+        "last_date": "2026-02-23",
+        "lag_days": 15.0,
+        "message": "lag_warn_15d"
+      }
+    ]
+  },
+  "strict_rebalance_pretrade": true,
+  "allow_degraded_fallback": true,
+  "steps": [
+    {
+      "step": "repair_required_pipelines",
+      "cmd": "/opt/hostedtoolcache/Python/3.12.13/x64/bin/python src/pipeline/repair_required_pipelines_v1.py --db-path data/ownership.duckdb --as-of-date 2026-03-15 --max-rounds 5 --price-csv-dir data/csvs --prices-stale-days 1 --prices-max-symbols 0 --prices-sleep-ms 100 --bulk-lookback-days 180",
+      "returncode": 1,
+      "status": "ERROR",
+      "stdout_tail": "\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n===== REPAIR REQUIRED PIPELINES =====\nas_of_date: 2026-03-15\npassed: False\nrounds: 5\nremaining_failures:\n- bulk_block_deals: STALE | msg=lag_warn_15d | last=2026-02-23\nout_json: data/reports/repair_required_pipelines_v1_latest.json\n====================================\n",
+      "stderr_tail": ""
+    },
+    {
+      "step": "pipeline_health_checks",
+      "cmd": "/opt/hostedtoolcache/Python/3.12.13/x64/bin/python src/qa/run_pipeline_health_checks_v1.py --db-path data/ownership.duckdb --as-of-date 2026-03-15 --persist",
+      "returncode": 0,
+      "status": "OK",
+      "stdout_tail": "===== PIPELINE HEALTH CHECKS v1 =====\nprices_daily_v1: WORKING | last=2026-03-13 | lag=1.0 | rows=783363 | symbols=252 | msg=ok\ndelivery_daily_v1: WORKING | last=2026-03-13 | lag=1.0 | rows=373030 | symbols=253 | msg=ok\nbulk_block_deals: STALE | last=2026-02-23 | lag=15.0 | rows=21838 | symbols=1675 | msg=lag_warn_15d\nnews_social_raw_v1: OPTIONAL_OFF | last=None | lag=nan | rows=0 | symbols=0 | msg=no_last_date\nfundamentals_daily_v1: OPTIONAL_OFF | last=None | lag=nan | rows=0 | symbols=0 | msg=table_missing\nagentic_runs_v1: WORKING | last=2026-03-13 | lag=1.0 | rows=48 | symbols=0 | msg=ok\nagentic_consensus_v1: WORKING | last=2026-03-13 | lag=1.0 | rows=12178 | symbols=256 | msg=ok\n=====================================\n",
+      "stderr_tail": ""
+    },
+    {
+      "step": "required_freshness_gate",
+      "cmd": "internal_freshness_gate",
+      "returncode": 0,
+      "status": "OK",
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "step": "locked_decision_strict",
+      "cmd": "/opt/hostedtoolcache/Python/3.12.13/x64/bin/python src/agentic/run_ai_agent_stable_stocks_v1.py --db-path data/ownership.duckdb --mode decision --as-of-date 2026-03-13 --out-json data/reports/ai_agent_stable_stocks_v1_latest.json --strict-rebalance-pretrade",
+      "returncode": 0,
+      "status": "OK",
+      "stdout_tail": "===== AI AGENT STABLE STOCKS V1 =====\nmodel_id: AI_AGENT_STABLE_STOCKS_V1\nmodel_version: 2026-02-24\npretrade_gate_pre_decision_passed: True\npretrade_gate_heal_attempts: 0\npretrade_gate_rebalance_allowed: True\npretrade_gate_rebalance_mode: STRICT\ndecision_run_id: agentic_1b8dcbbba296\nas_of_date: 2026-03-13\nportfolio_size: 10\nout_json: data/reports/ai_agent_stable_stocks_v1_latest.json\n======================================\n",
+      "stderr_tail": ""
+    }
+  ],
+  "reports": {
+    "model_report": "data/reports/ai_agent_stable_stocks_v1_latest.json",
+    "pipeline_health": "data/reports/repair_required_pipelines_v1_latest.json"
+  }
+}

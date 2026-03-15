@@ -1,0 +1,133 @@
+{
+  "model_id": "AI_AGENT_STABLE_STOCKS_V1",
+  "model_version": "2026-02-24",
+  "frozen_model": {
+    "model_id": "AI_AGENT_STABLE_STOCKS_V1",
+    "model_version": "2026-02-24",
+    "source": "fullgrid_8100_trials_guardrail_risk_matrix_fullgrid_v7",
+    "best_trial_id": 114,
+    "best_combo": "WIN_LOW__DD_HIGH__SH_LOW",
+    "policy": {
+      "watchlist_size": 25,
+      "portfolio_min_positions": 10,
+      "portfolio_max_positions": 15,
+      "portfolio_target_positions": 12,
+      "consensus_buy_threshold": 0.62,
+      "consensus_sell_threshold": 0.28,
+      "max_price_staleness_days": 3,
+      "min_median_turnover_inr": 20000000.0,
+      "max_single_weight": 0.1,
+      "min_single_weight": 0.03
+    },
+    "agent_weights": {
+      "technical": 0.55,
+      "ownership": 0.25,
+      "fundamental": 0.15,
+      "news": 0.05
+    },
+    "reference_metrics": {
+      "cagr": 0.2268159812514951,
+      "trade_win_rate": 0.6452205882352942,
+      "max_drawdown": -0.4117907905807138,
+      "sharpe": 1.1760153156502529
+    }
+  },
+  "decision_cycle": {
+    "run_id": "agentic_1b8dcbbba296",
+    "status": "OK",
+    "as_of_date": "2026-03-13",
+    "objective": "Max CAGR toward >=25% with minimum-risk constraints and institutional controls.",
+    "policy": {
+      "watchlist_size": 25,
+      "portfolio_min_positions": 10,
+      "portfolio_max_positions": 15,
+      "portfolio_target_positions": 12,
+      "consensus_buy_threshold": 0.62,
+      "consensus_sell_threshold": 0.28,
+      "max_price_staleness_days": 3,
+      "min_median_turnover_inr": 20000000.0,
+      "max_single_weight": 0.1,
+      "min_single_weight": 0.03
+    },
+    "agent_weight_overrides": {
+      "technical": 0.55,
+      "ownership": 0.25,
+      "fundamental": 0.15,
+      "news": 0.05
+    },
+    "regime": {
+      "label": "bear",
+      "score": 0.3,
+      "exposure_scalar": 0.85,
+      "breadth": 0.224,
+      "market_ret_63": -0.0842334883457122
+    },
+    "universe_size": 251,
+    "watchlist_size": 25,
+    "portfolio_size": 10,
+    "price_stale_days_global": 0,
+    "risk_pass_count": 246
+  },
+  "backtest": null,
+  "pretrade_gate": {
+    "pre_decision": {
+      "as_of_date": "2026-03-13",
+      "required_pipelines": [
+        "delivery_daily_v1",
+        "prices_daily_v1"
+      ],
+      "passed": true,
+      "failing": []
+    },
+    "auto_heal": {
+      "attempt_count": 0,
+      "attempts": [],
+      "final_gate": {
+        "as_of_date": "2026-03-13",
+        "required_pipelines": [
+          "bulk_block_deals",
+          "delivery_daily_v1",
+          "prices_daily_v1"
+        ],
+        "passed": true,
+        "failing": []
+      }
+    },
+    "post_decision": {
+      "as_of_date": "2026-03-13",
+      "required_pipelines": [
+        "bulk_block_deals",
+        "delivery_daily_v1",
+        "prices_daily_v1"
+      ],
+      "passed": true,
+      "failing": []
+    },
+    "post_decision_core": {
+      "as_of_date": "2026-03-13",
+      "required_pipelines": [
+        "agentic_consensus_v1",
+        "agentic_runs_v1",
+        "delivery_daily_v1",
+        "prices_daily_v1"
+      ],
+      "passed": true,
+      "failing": []
+    },
+    "post_decision_full": {
+      "as_of_date": "2026-03-13",
+      "required_pipelines": [
+        "agentic_consensus_v1",
+        "agentic_runs_v1",
+        "bulk_block_deals",
+        "delivery_daily_v1",
+        "prices_daily_v1"
+      ],
+      "passed": true,
+      "failing": []
+    },
+    "rebalance_allowed": true,
+    "rebalance_mode": "STRICT",
+    "rebalance_risk_flags": []
+  }
+}
