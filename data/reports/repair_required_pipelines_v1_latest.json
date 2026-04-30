@@ -1,0 +1,226 @@
+{
+  "as_of_date": "2026-04-30",
+  "required_pipelines": [
+    "bulk_block_deals",
+    "delivery_daily_v1",
+    "prices_daily_v1"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "failing_before": [
+        "bulk_block_deals"
+      ],
+      "actions": {
+        "update_bulk_live": {
+          "ok": false,
+          "rows": 0,
+          "mode": "",
+          "errors": [
+            "api_batch_2025-11-01_2025-11-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-11-2025&to=30-11-2025",
+            "api_batch_2025-12-01_2025-12-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-12-2025&to=30-12-2025",
+            "api_batch_2025-12-31_2026-01-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-12-2025&to=29-01-2026",
+            "api_batch_2026-01-30_2026-02-28: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-01-2026&to=28-02-2026",
+            "api_batch_2026-03-01_2026-03-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-03-2026&to=30-03-2026",
+            "api_batch_2026-03-31_2026-04-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-03-2026&to=29-04-2026",
+            "api_batch_2026-04-30_2026-04-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-04-2026&to=30-04-2026",
+            "screener_fallback: Missing expected column: symbol",
+            "No bulk/block rows ingested from API, HTML, archive, or screener fallback."
+          ]
+        },
+        "download_bulk_archives_local": {
+          "ok": false,
+          "output_dir": "data_raw/nse_bulk",
+          "error": "1"
+        },
+        "update_bulk_from_local": {
+          "ok": false,
+          "input_dir": "data_raw/nse_bulk",
+          "error": "1"
+        }
+      },
+      "failing_after": [
+        {
+          "pipeline": "bulk_block_deals",
+          "status": "BROKEN",
+          "last_date": "2026-02-23",
+          "lag_days": 48.0,
+          "message": "stale_48d"
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "failing_before": [
+        "bulk_block_deals"
+      ],
+      "actions": {
+        "update_bulk_live": {
+          "ok": false,
+          "rows": 0,
+          "mode": "",
+          "errors": [
+            "api_batch_2025-11-01_2025-11-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-11-2025&to=30-11-2025",
+            "api_batch_2025-12-01_2025-12-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-12-2025&to=30-12-2025",
+            "api_batch_2025-12-31_2026-01-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-12-2025&to=29-01-2026",
+            "api_batch_2026-01-30_2026-02-28: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-01-2026&to=28-02-2026",
+            "api_batch_2026-03-01_2026-03-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-03-2026&to=30-03-2026",
+            "api_batch_2026-03-31_2026-04-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-03-2026&to=29-04-2026",
+            "api_batch_2026-04-30_2026-04-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-04-2026&to=30-04-2026",
+            "screener_fallback: Missing expected column: symbol",
+            "No bulk/block rows ingested from API, HTML, archive, or screener fallback."
+          ]
+        },
+        "download_bulk_archives_local": {
+          "ok": false,
+          "output_dir": "data_raw/nse_bulk",
+          "error": "1"
+        },
+        "update_bulk_from_local": {
+          "ok": false,
+          "input_dir": "data_raw/nse_bulk",
+          "error": "1"
+        }
+      },
+      "failing_after": [
+        {
+          "pipeline": "bulk_block_deals",
+          "status": "BROKEN",
+          "last_date": "2026-02-23",
+          "lag_days": 48.0,
+          "message": "stale_48d"
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "failing_before": [
+        "bulk_block_deals"
+      ],
+      "actions": {
+        "update_bulk_live": {
+          "ok": false,
+          "rows": 0,
+          "mode": "",
+          "errors": [
+            "api_batch_2025-11-01_2025-11-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-11-2025&to=30-11-2025",
+            "api_batch_2025-12-01_2025-12-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-12-2025&to=30-12-2025",
+            "api_batch_2025-12-31_2026-01-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-12-2025&to=29-01-2026",
+            "api_batch_2026-01-30_2026-02-28: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-01-2026&to=28-02-2026",
+            "api_batch_2026-03-01_2026-03-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-03-2026&to=30-03-2026",
+            "api_batch_2026-03-31_2026-04-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-03-2026&to=29-04-2026",
+            "api_batch_2026-04-30_2026-04-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-04-2026&to=30-04-2026",
+            "screener_fallback: Missing expected column: symbol",
+            "No bulk/block rows ingested from API, HTML, archive, or screener fallback."
+          ]
+        },
+        "download_bulk_archives_local": {
+          "ok": false,
+          "output_dir": "data_raw/nse_bulk",
+          "error": "1"
+        },
+        "update_bulk_from_local": {
+          "ok": false,
+          "input_dir": "data_raw/nse_bulk",
+          "error": "1"
+        }
+      },
+      "failing_after": [
+        {
+          "pipeline": "bulk_block_deals",
+          "status": "BROKEN",
+          "last_date": "2026-02-23",
+          "lag_days": 48.0,
+          "message": "stale_48d"
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "failing_before": [
+        "bulk_block_deals"
+      ],
+      "actions": {
+        "update_bulk_live": {
+          "ok": false,
+          "rows": 0,
+          "mode": "",
+          "errors": [
+            "api_batch_2025-11-01_2025-11-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-11-2025&to=30-11-2025",
+            "api_batch_2025-12-01_2025-12-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-12-2025&to=30-12-2025",
+            "api_batch_2025-12-31_2026-01-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-12-2025&to=29-01-2026",
+            "api_batch_2026-01-30_2026-02-28: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-01-2026&to=28-02-2026",
+            "api_batch_2026-03-01_2026-03-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-03-2026&to=30-03-2026",
+            "api_batch_2026-03-31_2026-04-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-03-2026&to=29-04-2026",
+            "api_batch_2026-04-30_2026-04-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-04-2026&to=30-04-2026",
+            "screener_fallback: Missing expected column: symbol",
+            "No bulk/block rows ingested from API, HTML, archive, or screener fallback."
+          ]
+        },
+        "download_bulk_archives_local": {
+          "ok": false,
+          "output_dir": "data_raw/nse_bulk",
+          "error": "1"
+        },
+        "update_bulk_from_local": {
+          "ok": false,
+          "input_dir": "data_raw/nse_bulk",
+          "error": "1"
+        }
+      },
+      "failing_after": [
+        {
+          "pipeline": "bulk_block_deals",
+          "status": "BROKEN",
+          "last_date": "2026-02-23",
+          "lag_days": 48.0,
+          "message": "stale_48d"
+        }
+      ]
+    },
+    {
+      "round": 5,
+      "failing_before": [
+        "bulk_block_deals"
+      ],
+      "actions": {
+        "update_bulk_live": {
+          "ok": false,
+          "rows": 0,
+          "mode": "",
+          "errors": [
+            "api_batch_2025-11-01_2025-11-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-11-2025&to=30-11-2025",
+            "api_batch_2025-12-01_2025-12-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-12-2025&to=30-12-2025",
+            "api_batch_2025-12-31_2026-01-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-12-2025&to=29-01-2026",
+            "api_batch_2026-01-30_2026-02-28: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-01-2026&to=28-02-2026",
+            "api_batch_2026-03-01_2026-03-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=01-03-2026&to=30-03-2026",
+            "api_batch_2026-03-31_2026-04-29: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=31-03-2026&to=29-04-2026",
+            "api_batch_2026-04-30_2026-04-30: 404 Client Error: Not Found for url: https://www.nseindia.com/api/historical/bulk-deals?from=30-04-2026&to=30-04-2026",
+            "screener_fallback: Missing expected column: symbol",
+            "No bulk/block rows ingested from API, HTML, archive, or screener fallback."
+          ]
+        },
+        "download_bulk_archives_local": {
+          "ok": false,
+          "output_dir": "data_raw/nse_bulk",
+          "error": "1"
+        },
+        "update_bulk_from_local": {
+          "ok": false,
+          "input_dir": "data_raw/nse_bulk",
+          "error": "1"
+        }
+      },
+      "failing_after": [
+        {
+          "pipeline": "bulk_block_deals",
+          "status": "BROKEN",
+          "last_date": "2026-02-23",
+          "lag_days": 48.0,
+          "message": "stale_48d"
+        }
+      ]
+    }
+  ],
+  "passed": false
+}

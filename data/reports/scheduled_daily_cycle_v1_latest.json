@@ -1,0 +1,71 @@
+{
+  "as_of_date": "2026-04-30",
+  "as_of_date_initial": "2026-04-30",
+  "repair_as_of_date": "2026-04-30",
+  "status": "ERROR",
+  "decision_mode": "SKIPPED_FRESHNESS_BLOCK",
+  "required_freshness_gate": {
+    "as_of_date": "2026-04-30",
+    "required_pipelines": [
+      "bulk_block_deals",
+      "delivery_daily_v1",
+      "prices_daily_v1"
+    ],
+    "core_required_pipelines": [
+      "delivery_daily_v1",
+      "prices_daily_v1"
+    ],
+    "strict_bulk_enabled": true,
+    "passed": false,
+    "failing": [
+      {
+        "pipeline": "bulk_block_deals",
+        "status": "BROKEN",
+        "last_date": "2026-02-23",
+        "lag_days": 48.0,
+        "message": "stale_48d"
+      }
+    ],
+    "warnings": []
+  },
+  "strict_rebalance_pretrade": true,
+  "allow_degraded_fallback": true,
+  "steps": [
+    {
+      "step": "repair_required_pipelines",
+      "cmd": "/opt/hostedtoolcache/Python/3.12.13/x64/bin/python src/pipeline/repair_required_pipelines_v1.py --db-path data/ownership.duckdb --as-of-date 2026-04-30 --max-rounds 5 --price-csv-dir data/csvs --prices-stale-days 1 --prices-max-symbols 0 --prices-sleep-ms 100 --bulk-lookback-days 180",
+      "returncode": 1,
+      "status": "ERROR",
+      "stdout_tail": "\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n\n====== NSE BULK DEAL INGESTION ======\n\nERROR: No bulk/block rows ingested from API, HTML, archive, or screener fallback.\n\n=====================================\n\n===== BULK ARCHIVE LOCAL BACKFILL =====\nout_dir: data_raw/nse_bulk\ndownloaded: 0\nskipped_existing: 0\n=======================================\nno_input_files: data_raw/nse_bulk\n===== REPAIR REQUIRED PIPELINES =====\nas_of_date: 2026-04-30\npassed: False\nrounds: 5\nremaining_failures:\n- bulk_block_deals: BROKEN | msg=stale_48d | last=2026-02-23\nout_json: data/reports/repair_required_pipelines_v1_latest.json\n====================================\n",
+      "stderr_tail": ""
+    },
+    {
+      "step": "pipeline_health_checks",
+      "cmd": "/opt/hostedtoolcache/Python/3.12.13/x64/bin/python src/qa/run_pipeline_health_checks_v1.py --db-path data/ownership.duckdb --as-of-date 2026-04-30 --persist",
+      "returncode": 0,
+      "status": "OK",
+      "stdout_tail": "===== PIPELINE HEALTH CHECKS v1 =====\nprices_daily_v1: WORKING | last=2026-04-30 | lag=0.0 | rows=790321 | symbols=253 | msg=ok\ndelivery_daily_v1: WORKING | last=2026-04-30 | lag=0.0 | rows=378014 | symbols=254 | msg=ok\nbulk_block_deals: BROKEN | last=2026-02-23 | lag=48.0 | rows=21838 | symbols=1675 | msg=stale_48d\nnews_social_raw_v1: OPTIONAL_OFF | last=None | lag=nan | rows=0 | symbols=0 | msg=no_last_date\nfundamentals_daily_v1: OPTIONAL_OFF | last=None | lag=nan | rows=0 | symbols=0 | msg=table_missing\nagentic_runs_v1: BROKEN | last=2026-04-24 | lag=4.0 | rows=129 | symbols=0 | msg=stale_4d\nagentic_consensus_v1: BROKEN | last=2026-04-24 | lag=4.0 | rows=32535 | symbols=257 | msg=stale_4d\n=====================================\n",
+      "stderr_tail": ""
+    },
+    {
+      "step": "required_freshness_gate",
+      "cmd": "internal_freshness_gate",
+      "returncode": 1,
+      "status": "ERROR",
+      "stdout_tail": "",
+      "stderr_tail": "[{\"pipeline\": \"bulk_block_deals\", \"status\": \"BROKEN\", \"last_date\": \"2026-02-23\", \"lag_days\": 48.0, \"message\": \"stale_48d\"}]"
+    },
+    {
+      "step": "locked_decision_strict",
+      "cmd": "",
+      "returncode": 1,
+      "status": "ERROR",
+      "stdout_tail": "",
+      "stderr_tail": "Skipped due to failed required_freshness_gate"
+    }
+  ],
+  "reports": {
+    "model_report": "data/reports/ai_agent_stable_stocks_v1_latest.json",
+    "pipeline_health": "data/reports/repair_required_pipelines_v1_latest.json"
+  }
+}
